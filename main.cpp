@@ -352,9 +352,11 @@ int main(int argc, const char * argv[]) {
         auto cvDepthImg = depthImgFrame->getFrame(false);
         
         DepthProxy<uint16_t> proxy(cvDepthImg);
+        // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
+        // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
+        // the max depth.
         proxy.interpolateZero(20, 100, 33119);
-        
-        // uint16_t maxZ = replaceZero<640, 400, uint16_t>(cvDepthImg, 33119);
+        // proxy.replaceZero(33119);
         
         // Get a direct pointer to the raw depth buffer
         uint16_t *rawDepth = (uint16_t *) cvDepthImg.ptr<uint16_t>();
