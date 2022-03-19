@@ -8,6 +8,7 @@
 #include <iostream>
 #include <chrono>
 #include <depthai/depthai.hpp>
+#include <thread>
 
 using namespace std;
 using namespace std::chrono;
@@ -94,9 +95,14 @@ T replaceZero(cv::Mat &ioImg, T iReplacement) {
 
 template <class T>
 class DepthProxy {
+    protected:
+        static void interpolateZeroRowsFunc(DepthProxy<T> *iSelf, int iMaxSearch, T iMaxDif, T iDefaultReplacement, int iyStart, int iyEnd) {
+            iSelf->interpolateZeroRows(iMaxSearch, iMaxDif, iDefaultReplacement, iyStart, iyEnd);
+        }
+    
     public:
-        DepthProxy(cv::Mat &iImage) : img(iImage)
-        { }
+        DepthProxy(cv::Mat &iImage) : img(iImage) { }
+        virtual ~DepthProxy() { }
     
         int width() const { return img.cols; }
         int height() const { return img.rows; }
@@ -114,50 +120,95 @@ class DepthProxy {
             }
         }
     
-        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement) {
-            for(int y = 0; y < height(); y++) {
+        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement, bool iMultithreaded = true) {
+            if(iMultithreaded) {
+                int processors = thread::hardware_concurrency();
+                int rows = height() / processors;
+                int remainder = height() % processors;
+                vector<thread *> threads;
+                int yStart = 0;
+                for(int i = 0; i < processors + (remainder != 0); i++) {
+                    threads.push_back(
+                        new thread(DepthProxy<T>::interpolateZeroRowsFunc, this, iMaxSearch, iMaxDif, iDefaultReplacement, yStart, yStart + processors)
+                    );
+                    yStart += processors;
+                }
+                if(remainder) {
+                    threads.push_back(
+                        new thread(DepthProxy<T>::interpolateZeroRowsFunc, this, iMaxSearch, iMaxDif, iDefaultReplacement, yStart, yStart + remainder)
+                    );
+                }
+                for(auto *aThread : threads) {
+                    aThread->join();
+                    delete aThread;
+                }
+            } else {
+                interpolateZeroRows(iMaxSearch, iMaxDif, iDefaultReplacement, 0, height());
+            }
+        }
+        
+        void interpolateZeroRows(int iMaxSearch, T iMaxDif, T iDefaultReplacement, int iyStart, int iyEnd) {
+            // Iterate through all pixels
+            for(int y = iyStart; y < iyEnd; y++) {
                 for(int x = 0; x < width(); x++) {
+                    // If the depth value is zero
                     if(!value(x, y)) {
+                        // Simultanously scan horizontally and vertically.
+                        // Stop when the closest neighbors have been found in either direction
                         int usex = 0, minx, maxx; T xval1, xval2;
                         int usey = 0, miny, maxy; T yval1, yval2;
                         for(int i = 1; (i < iMaxSearch) && (usex < 3) && (usey < 3); i++) {
-                            if((x - i) >= 0) {
-                                if(xval1 = value(x - i, y)) {
-                                    usex |= 1;
-                                    minx = x - i;
-                                }
+                            int x1 = x - i, x2 = x + i, y1 = y - 1, y2 = y + 1;
+                            // If a non-zero neighbor is found to the left,
+                            // flag it, and store the lower x index
+                            if(!(usex & 1) && (x1 >= 0) && ((xval1 = value(x1, y)))) {
+                                usex |= 1;
+                                minx = x1;
                             }
-                            if((x + 1) < width()) {
-                                if(xval2 = value(x + i, y)) {
-                                    usex |= 2;
-                                    maxx = x + i;
-                                }
+                            // If a non-zero neighbor is found to the right,
+                            // flag it, and store the upper x index
+                            if(!(usex & 2) && (x2 < width()) && ((xval2 = value(x2, y)))) {
+                                usex |= 2;
+                                maxx = x2;
                             }
-                            if((y - i) >= 0) {
-                                if(yval1 = value(x, y - i)) {
-                                    usey |= 1;
-                                    miny = y - i;
-                                }
+                            // If a non-zero neighbor is found above,
+                            // flag it, and store the lower y index
+                            if(!(usey & 1) && (y1 >= 0) && ((yval1 = value(x, y1)))) {
+                                usey |= 1;
+                                miny = y1;
                             }
-                            if((y + i) < height()) {
-                                if(yval2 = value(x, y + i)) {
-                                    usey |= 2;
-                                    maxy = y + i;
-                                }
+                            // If a non-zero neighbor is found below,
+                            // flag it, and store the upper y index
+                            if(!(usey & 2) && (y2 < height()) && ((yval2 = value(x, y2)))) {
+                                usey |= 2;
+                                maxy = y2;
                             }
                         }
-                        if((usex == 3) && (abs(xval2 - xval1) < iMaxDif)) {
-                            float xstep = float(xval2 - xval1) / float(maxx - minx);
+                        
+                        float xrange = xval2 - xval1;
+                        float yrange = yval2 - yval1;
+                        
+                        // If a horizontal span has been found and the difference in depth
+                        // is within the given threshold, replace all zero values within
+                        // the span with linearly interpolated values
+                        if((usex == 3) && (abs(xrange) < iMaxDif)) {
+                            float xstep = float(xrange) / float(maxx - minx);
                             float newx = xval1 + xstep;
                             for(int ix = minx + 1; ix < maxx; ix++, newx += xstep) {
                                 value(ix, y) = T(newx);
                             }
-                        } else if((usey == 3) && (abs(yval2 - yval1) < iMaxDif)) {
-                            float ystep = float(yval2 - yval1) / float(maxy - miny);
+                            
+                        // If a vertical span has been found and the difference in depth
+                        // is within the given threshold, replace all zero values within
+                        // the span with linearly interpolated values
+                        } else if((usey == 3) && (abs(yrange) < iMaxDif)) {
+                            float ystep = float(yrange) / float(maxy - miny);
                             float newy = yval1 + ystep;
                             for(int iy = miny + 1; iy < maxy; iy++, newy += ystep) {
                                 value(x, iy) = T(newy);
                             }
+                        
+                        // Otherwise, replace the zero value with the specified default
                         } else {
                             value(x, y) = iDefaultReplacement;
                         }
@@ -172,6 +223,8 @@ class DepthProxy {
 
 int main(int argc, const char * argv[]) {
     cout << "<DepthStream>" << endl;
+    
+    cout << "  Number of processors: " << thread::hardware_concurrency() << endl;
     
     cout << "  Setting up pipeline" << endl;
     
@@ -355,7 +408,7 @@ int main(int argc, const char * argv[]) {
         // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
         // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
         // the max depth.
-        proxy.interpolateZero(20, 100, 33119);
+        proxy.interpolateZero(20, 100, 33119, false);
         // proxy.replaceZero(33119);
         
         // Get a direct pointer to the raw depth buffer
@@ -372,13 +425,12 @@ int main(int argc, const char * argv[]) {
         sum += instantaneousFPS;
         tail++;
         tail %= bufSize;
-        if(count < bufSize) {
-            count++;
-        }
+        (count < bufSize)
+            && (count++);
+        
         fps = sum / float(count);
-        if(count == bufSize) {
-            sum -= cyclicBuffer[tail];
-        }
+        (count == bufSize)
+            && (sum -= cyclicBuffer[tail]);
         timeStamp = currentTime;
         
         // Throttle reporting
