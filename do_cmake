@@ -1,0 +1,6 @@
+#!/bin/zsh
+
+[ ! -d "./build" ] && mkdir ./build
+cd ./build
+cmake -Ddepthai_DIR=/Users/tigakub/Documents/Projects/Robotics/DepthAI/depthai-python/depthai-core/build -DOpenCV_DIR=/opt/homebrew/opt/opencv ..
+
