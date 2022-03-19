@@ -8,6 +8,7 @@
 #include <iostream>
 #include <chrono>
 #include <depthai/depthai.hpp>
+#include <math.h>
 
 using namespace std;
 using namespace std::chrono;
@@ -114,46 +115,40 @@ class DepthProxy {
             }
         }
     
-        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement) {
+        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff) {
             for(int y = 0; y < height(); y++) {
                 for(int x = 0; x < width(); x++) {
                     if(!value(x, y)) {
                         int usex = 0, minx, maxx; T xval1, xval2;
                         int usey = 0, miny, maxy; T yval1, yval2;
                         for(int i = 1; (i < iMaxSearch) && (usex < 3) && (usey < 3); i++) {
-                            if((x - i) >= 0) {
-                                if(xval1 = value(x - i, y)) {
-                                    usex |= 1;
-                                    minx = x - i;
-                                }
+                            int lowerx(x - i), upperx(x + i), lowery(y - i), uppery(y + i);
+                            if((lowerx >= 0) && (xval1 = value(lowerx, y))) {
+                                usex |= 1;
+                                minx = lowerx;
                             }
-                            if((x + 1) < width()) {
-                                if(xval2 = value(x + i, y)) {
-                                    usex |= 2;
-                                    maxx = x + i;
-                                }
+                            if((upperx < width()) && (xval2 = value(upperx, y))) {
+                                usex |= 2;
+                                maxx = upperx;
                             }
-                            if((y - i) >= 0) {
-                                if(yval1 = value(x, y - i)) {
-                                    usey |= 1;
-                                    miny = y - i;
-                                }
+                            if((lowery >= 0) && (yval1 = value(x, lowery))) {
+                                usey |= 1;
+                                miny = lowery;
                             }
-                            if((y + i) < height()) {
-                                if(yval2 = value(x, y + i)) {
-                                    usey |= 2;
-                                    maxy = y + i;
-                                }
+                            if((uppery < height()) && (yval2 = value(x, uppery))) {
+                                usey |= 2;
+                                maxy = uppery;
                             }
                         }
-                        if((usex == 3) && (abs(xval2 - xval1) < iMaxDif)) {
-                            float xstep = float(xval2 - xval1) / float(maxx - minx);
+                        float xrange(xval2 - xval1), yrange(yval2 - yval1);
+                        if((usex == 3) && (fabs(xrange) < iMaxDif)) {
+                            float xstep = float(xrange) / float(maxx - minx);
                             float newx = xval1 + xstep;
                             for(int ix = minx + 1; ix < maxx; ix++, newx += xstep) {
                                 value(ix, y) = T(newx);
                             }
-                        } else if((usey == 3) && (abs(yval2 - yval1) < iMaxDif)) {
-                            float ystep = float(yval2 - yval1) / float(maxy - miny);
+                        } else if((usey == 3) && (fabs(yrange) < iMaxDif)) {
+                            float ystep = float(yrange) / float(maxy - miny);
                             float newy = yval1 + ystep;
                             for(int iy = miny + 1; iy < maxy; iy++, newy += ystep) {
                                 value(x, iy) = T(newy);
@@ -161,6 +156,9 @@ class DepthProxy {
                         } else {
                             value(x, y) = iDefaultReplacement;
                         }
+                    }
+                    if(value(x, y) > iCutoff) {
+                        value(x, y) = iDefaultReplacement;
                     }
                 }
             }
@@ -237,6 +235,8 @@ int main(int argc, const char * argv[]) {
     // The other options are MEDIAN_OFF, KERNEL_3x3, and KERNEL_7x7
     // (please note the lower-case 'x').
     stereo->initialConfig.setMedianFilter(MedianFilter::KERNEL_5x5);
+    
+    stereo->initialConfig.setConfidenceThreshold(191);
 
     //--------------------------------
     // Post-processing noise reduction
@@ -355,7 +355,7 @@ int main(int argc, const char * argv[]) {
         // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
         // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
         // the max depth.
-        proxy.interpolateZero(20, 100, 33119);
+        proxy.interpolateZero(20, 100, 33119, 3000);
         // proxy.replaceZero(33119);
         
         // Get a direct pointer to the raw depth buffer
@@ -372,13 +372,9 @@ int main(int argc, const char * argv[]) {
         sum += instantaneousFPS;
         tail++;
         tail %= bufSize;
-        if(count < bufSize) {
-            count++;
-        }
+        (count < bufSize) && (count++);
         fps = sum / float(count);
-        if(count == bufSize) {
-            sum -= cyclicBuffer[tail];
-        }
+        (count == bufSize) && (sum -= cyclicBuffer[tail]);
         timeStamp = currentTime;
         
         // Throttle reporting
