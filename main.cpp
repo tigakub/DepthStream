@@ -9,6 +9,7 @@
 #include <chrono>
 #include <depthai/depthai.hpp>
 #include <math.h>
+#include <thread>
 
 using namespace std;
 using namespace std::chrono;
@@ -114,9 +115,32 @@ class DepthProxy {
                 if(!ptr[i]) ptr[i] = iReplacement;
             }
         }
+
+        static void interpolateZeroThreadFunc(DepthProxy<T> *iSelf, int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, int iStartY, int iRows) {
+            iSelf->interpolateZeroBlock(iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, iStartY, iRows);
+        }
+
+        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, bool iMultithreaded = true) {
+            if(iMultithreaded) {
+                vector<thread *> threads;
+                int h = iMaxSearch << 1;
+                for(int y = 0; y < height(); y += iMaxSearch) {
+                    if((y + h) > height()) h = height() - y;
+                    threads.push_back(
+                        new thread(DepthProxy<T>::interpolateZeroThreadFunc, this, iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, y, h)
+                    );
+                }
+                for(auto *aThread : threads) {
+                    aThread->join();
+                    delete aThread;
+                }
+            } else {
+                interpolateZeroBlock(iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, 0, height());
+            }
+        }
     
-        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff) {
-            for(int y = 0; y < height(); y++) {
+        void interpolateZeroBlock(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, int iStartY, int iRows) {
+            for(int y = iStartY; y < iStartY + iRows; y++) {
                 for(int x = 0; x < width(); x++) {
                     if(!value(x, y)) {
                         int usex = 0, minx, maxx; T xval1, xval2;
@@ -343,6 +367,8 @@ int main(int argc, const char * argv[]) {
     // Image buffer to store color conversion from greyscale depth
     cv::Mat cvRGBImg;
     
+    int key = 0;
+
     do {
         
         // Get the latest depth frame
@@ -355,7 +381,7 @@ int main(int argc, const char * argv[]) {
         // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
         // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
         // the max depth.
-        proxy.interpolateZero(20, 100, 33119, 3000);
+        proxy.interpolateZero(10, 100, 33119, 3000);
         // proxy.replaceZero(33119);
         
         // Get a direct pointer to the raw depth buffer
@@ -381,11 +407,11 @@ int main(int argc, const char * argv[]) {
         elapsed = currentTime - reportTimeStamp;
         float secondsElapsed = float(duration_cast<microseconds>(elapsed).count()) * 0.000001;
         if(secondsElapsed > 1.0) {
-            const auto &upper_left = pc(50, 10);
-            const auto &upper_right = pc(550, 10);
+            const auto &upper_left = pc(50, 20);
+            const auto &upper_right = pc(540, 20);
             const auto &center = pc(320, 200);
-            const auto &lower_left = pc(50, 390);
-            const auto &lower_right = pc(550, 390);
+            const auto &lower_left = pc(50, 380);
+            const auto &lower_right = pc(540, 380);
             cout
                 << "    fps: " << fps << endl
                 << "    upper_left  (" << upper_left.x * 0.1 << ", " << upper_left.y * 0.1 << ", " << upper_left.z * 0.1 << ") cm" << endl
@@ -407,10 +433,10 @@ int main(int argc, const char * argv[]) {
         cv::imshow("depth", cvRGBImg);
         
         // Allow OpenCV to process window and key events
-        cv::waitKey(1);
+        key = cv::waitKey(1);
         
     // Loop endlessly
-    } while(1);
+    } while(key != 'q' && key != 'Q');
 
     return 0;
 }
