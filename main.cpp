@@ -37,7 +37,7 @@ class StructuredPointCloud
         {
             cout << "rfx: " << rfx << ", rfy: " << rfy << ", cx_over_fx: " << cx_over_fx << ", cy_over_fy: " << cy_over_fy << endl;
         }
-        
+
         // Function to convert depth data into cartesian vertices and store them
         void convert(const cv::Mat &iRawDepth) {
             for(int y = 0; y < HEIGHT; y++) {
@@ -52,7 +52,7 @@ class StructuredPointCloud
                 }
             }
         }
-        
+
         // Function to convert depth data into cartesian vertices and store them
         void convert(const uint16_t *iRawDepth) {
             for(int y = 0; y < HEIGHT; y++) {
@@ -70,11 +70,11 @@ class StructuredPointCloud
 
         // Return a const pointer to the point cloud vertices
         const vertex *cartesianMap() const { return data; }
-    
+
         const vertex &operator()(int x, int y) const {
             return data[y * WIDTH + x];
         }
-    
+
     protected:
         float rfx, rfy, cx_over_fx, cy_over_fy;
         vertex data[WIDTH * HEIGHT];
@@ -99,13 +99,13 @@ class DepthProxy {
     public:
         DepthProxy(cv::Mat &iImage) : img(iImage)
         { }
-    
+
         int width() const { return img.cols; }
         int height() const { return img.rows; }
-    
+
         T value(int x, int y) const { return img.ptr<T>()[y * width() + x]; }
         T &value(int x, int y) { return img.ptr<T>()[y * width() + x]; }
-    
+
         T replaceZero(T iReplacement) {
             T max = 0;
             T *ptr = img.ptr<T>();
@@ -138,7 +138,7 @@ class DepthProxy {
                 interpolateZeroBlock(iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, 0, height());
             }
         }
-    
+
         void interpolateZeroBlock(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, int iStartY, int iRows) {
             for(int y = iStartY; y < iStartY + iRows; y++) {
                 for(int x = 0; x < width(); x++) {
@@ -187,23 +187,39 @@ class DepthProxy {
                 }
             }
         }
-    
+
     protected:
         cv::Mat &img;
 };
 
 int main(int argc, const char * argv[]) {
+
+    bool visualizeDepth = false;
+    for(int a = 1; a < argc; a++) {
+        string arg(argv[a]);
+        if((arg == "-h") || (arg == "--help")) {
+            cout
+                << "Usage: " << argv[0] << " <option(s)>" << endl
+                << "Options: -h, --help\t\tdisplay this message" << endl
+                << "         -d, --visualize\tdisplay depth telemetry" << endl;
+            return 0;
+        }
+        if((arg == "-d") || (arg == "--depth")) {
+          visualizeDepth = true;
+        }
+    }
+
     cout << "<DepthStream>" << endl;
-    
+
     cout << "  Setting up pipeline" << endl;
-    
+
     Pipeline pl;
     //------------------------
     // Create MonoCamera Nodes
     //------------------------
-    
+
     cout << "    Creating left and right mono camera nodes" << endl;
-    
+
     // Create a MonoCamra node
     auto leftMono = pl.create<MonoCamera>();
     // Specify a resolution
@@ -259,7 +275,7 @@ int main(int argc, const char * argv[]) {
     // The other options are MEDIAN_OFF, KERNEL_3x3, and KERNEL_7x7
     // (please note the lower-case 'x').
     stereo->initialConfig.setMedianFilter(MedianFilter::KERNEL_5x5);
-    
+
     stereo->initialConfig.setConfidenceThreshold(191);
 
     //--------------------------------
@@ -281,29 +297,29 @@ int main(int argc, const char * argv[]) {
 
     // Write the raw configuratino to the the initialConfig object
     stereo->initialConfig.set(rawConfig);
-    
+
     /*
     //-------------------------
     // Create VideoEncoder Node
     //-------------------------
-    
+
     auto videoEncoder = pl.create<VideoEncoder>();
     videoEncoder->setQuality(100);
     */
-    
+
     //-------------
     // Node Linking
     //-------------
 
     cout << "    Linking mono camera nodes to stereo depth node" << endl;
-    
+
     // Feed the left and right monochrome camera outputs into
     // the StereoDepth node's left and right inputs.
     leftMono->out.link(stereo->left);
     rightMono->out.link(stereo->right);
-    
+
     cout << "    Creating output node, and linking stereo depth output to it" << endl;
-    
+
     // Create an output stream, named "depth_frames", and link
     // the StereoDepthNode output to its input
     auto depthOutput = pl.create<XLinkOut>();
@@ -313,19 +329,19 @@ int main(int argc, const char * argv[]) {
     //-------------------------
     // Retrieve Depth Telemetry
     //-------------------------
-    
+
     cout << "    Retrieving reference to depth frame output queue" << endl;
-    
+
     // Instantiate a device for the pipeline and get a reference to
     // the queue associated with the stream named "depth"
     Device dev(pl);
     auto depthFrameQueue = dev.getOutputQueue("depth_frames", 8, false);
-    
+
     cout << "  Retrieving camera intrinsics" << endl;
-    
+
     // Get the intrinsics for the right mono camera
     CalibrationHandler calibration = dev.readCalibration();
-    
+
     // Not really sure why I have to do this. Without passing topLeft and bottomRight
     // set to these values, getCameraIntrinsics() returns approximately 640 and 400
     // as the camera principle point. I assume this is  because the max frame size is
@@ -336,20 +352,20 @@ int main(int argc, const char * argv[]) {
     topLeft.x = 320; topLeft.y = 200;
     bottomRight.x = 320; bottomRight.y = 200;
     auto monoIntrinsics = calibration.getCameraIntrinsics(CameraBoardSocket::RIGHT, -1, -1, topLeft, bottomRight);
-    
+
     // The intrinsics matrix is stored in row major order.
     float fx = monoIntrinsics[0][0];
     float fy = monoIntrinsics[1][1];
     float cx = monoIntrinsics[0][2];
     float cy = monoIntrinsics[1][2];
-    
+
     cout << "    fx: " << fx << ", fy: " << fy << ", cx: " << cx << ", cy: " << cy << endl;
-    
+
     // Instantiate storage for the point cloud
     StructuredPointCloud<640, 400> pc(fx, fy, cx, cy);
-    
+
     cout << "  Commencing capture (press Ctrl-C to terminate)" << endl;
-    
+
     // Cyclic buffer to calculate simple moving average of fps
     const int bufSize = 20;
     float cyclicBuffer[bufSize];
@@ -357,39 +373,40 @@ int main(int argc, const char * argv[]) {
     int count = 0;
     float sum;
     float fps = 0.0;
-    
+
     // Initialize a timestamp to time the loop
     time_point<steady_clock> timeStamp = steady_clock::now();
-    
+
     // And a timestamp for throttling the output
     time_point<steady_clock> reportTimeStamp = timeStamp;
-    
+
     // Image buffer to store color conversion from greyscale depth
     cv::Mat cvRGBImg;
-    
+
     int key = 0;
+    bool quit = false;
 
     do {
-        
+
         // Get the latest depth frame
         auto depthImgFrame = depthFrameQueue->get<ImgFrame>();
-        
+
         // Get the depth frame as a cv2::Mat without any buffer copying
         auto cvDepthImg = depthImgFrame->getFrame(false);
-        
+
         DepthProxy<uint16_t> proxy(cvDepthImg);
         // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
         // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
         // the max depth.
         proxy.interpolateZero(10, 100, 33119, 3000);
         // proxy.replaceZero(33119);
-        
+
         // Get a direct pointer to the raw depth buffer
         uint16_t *rawDepth = (uint16_t *) cvDepthImg.ptr<uint16_t>();
-        
+
         // Pass the raw pointer to the StructuredPointCloud object for mapping into 3-space
         pc.convert(rawDepth);
-        
+
         // Calculate moving average of fps
         time_point<steady_clock> currentTime = steady_clock::now();
         auto elapsed = currentTime - timeStamp;
@@ -402,7 +419,7 @@ int main(int argc, const char * argv[]) {
         fps = sum / float(count);
         (count == bufSize) && (sum -= cyclicBuffer[tail]);
         timeStamp = currentTime;
-        
+
         // Throttle reporting
         elapsed = currentTime - reportTimeStamp;
         float secondsElapsed = float(duration_cast<microseconds>(elapsed).count()) * 0.000001;
@@ -421,22 +438,24 @@ int main(int argc, const char * argv[]) {
                 << "    lower_right (" << lower_right.x * 0.1 << ", " << lower_right.y * 0.1 << ", " << lower_right.z * 0.1 << ") cm" << endl;
             reportTimeStamp = currentTime;
         }
-        
-        // Convert depth image to a format that applyColorMap() will accept, scaled to a visible range
-        cvDepthImg.convertTo(cvRGBImg, CV_8U, 0.03);
-        
-        // Map greyscale to a rainbow ramp with shallow depth values mapped to warm colors,
-        // and deep values mapped to cool colors
-        cv::applyColorMap(cvRGBImg, cvRGBImg, cv::COLORMAP_RAINBOW);
-        
-        // Call OpenCV to display the color image
-        cv::imshow("depth", cvRGBImg);
-        
-        // Allow OpenCV to process window and key events
-        key = cv::waitKey(1);
-        
+
+        if(visualizeDepth) {
+            // Convert depth image to a format that applyColorMap() will accept, scaled to a visible range
+            cvDepthImg.convertTo(cvRGBImg, CV_8U, 0.03);
+
+            // Map greyscale to a rainbow ramp with shallow depth values mapped to warm colors,
+            // and deep values mapped to cool colors
+            cv::applyColorMap(cvRGBImg, cvRGBImg, cv::COLORMAP_RAINBOW);
+
+            // Call OpenCV to display the color image
+            cv::imshow("depth", cvRGBImg);
+            // Allow OpenCV to process window and key events
+            key = cv::waitKey(1);
+            quit = (key == 'q') || (key == 'Q');
+        }
+
     // Loop endlessly
-    } while(key != 'q' && key != 'Q');
+  } while(!quit);
 
     return 0;
 }
