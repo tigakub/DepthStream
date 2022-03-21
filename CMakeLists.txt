@@ -7,10 +7,10 @@ find_package(depthai CONFIG REQUIRED)
 find_package(OpenCV REQUIRED)
 
 include_directories(
-    /Users/tigakub/Documents/Projects/Robotics/DepthAI/depthai-python/depthai-core/build/install/include
-    /Users/tigakub/Documents/Projects/Robotics/DepthAI/depthai-python/depthai-core/build/install/include/depthai-shared/3rdparty
-    /Users/tigakub/Documents/Projects/Robotics/DepthAI/depthai-python/depthai-core/build/install/lib/cmake/depthai/dependencies/include
-    /Users/tigakub/Documents/Projects/Robotics/opencv/include
+    ~/Documents/Robotics/depthai-python/depthai-core/include
+    ~/Documents/Robotics/depthai-python/depthai-core/build/install/include/depthai-shared/3rdparty
+    ~/Documents/Robotics/depthai-python/depthai-core/build/install/lib/cmake/depthai/dependencies/include
+    /opt/opencv/include/opencv4
 )
 
 add_executable(DepthStream main.cpp)
