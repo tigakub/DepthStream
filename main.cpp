@@ -331,6 +331,7 @@ int main(int argc, const char * argv[]) {
 
     bool visualizeDepth = false;
     bool verbose = false;
+    bool startServer = false;
 
     for(int a = 1; a < argc; a++) {
         string arg(argv[a]);
@@ -339,7 +340,8 @@ int main(int argc, const char * argv[]) {
                 << "Usage: " << argv[0] << " <option(s)>" << endl
                 << "Options: -h, --help\t\tdisplay this message" << endl
                 << "         -d, --depth\t\tdisplay depth telemetry" << endl
-                << "         -v, --verbose\t\tprint capture info to contsole" << endl;
+                << "         -v, --verbose\t\tprint capture info to contsole" << endl
+                << "         -s, --server\t\tstart server" << endl;
             return 0;
         }
         
@@ -347,14 +349,17 @@ int main(int argc, const char * argv[]) {
             visualizeDepth = true;
         } else if((arg == "-v") || (arg == "--verbose")) {
             verbose = true;
+        } else if((arg == "-s") || (arg == "--server")) {
+            startServer = true;
         }
     }
 
     cout << "<DepthStream>" << endl;
 
-    cout << "  Setting up streaming server" << endl;
-
-    Server::shared.start();
+    if(startServer) {
+        cout << "  Setting up streaming server" << endl;
+        Server::shared.start();
+    }
 
     cout << "  Setting up pipeline" << endl;
 
@@ -504,7 +509,7 @@ int main(int argc, const char * argv[]) {
     float cx = monoIntrinsics[0][2];
     float cy = monoIntrinsics[1][2];
 
-    cout << "    fx: " << fx << ", fy: " << fy << ", cx: " << cx << ", cy: " << cy << endl;
+    cout << "      fx: " << fx << ", fy: " << fy << ", cx: " << cx << ", cy: " << cy << endl;
 
     // Instantiate storage for the point cloud
     StructuredPointCloud<640, 400> pc(fx, fy, cx, cy);
@@ -579,8 +584,14 @@ int main(int argc, const char * argv[]) {
                 const auto &lower_left = pc(50, 380);
                 const auto &lower_right = pc(540, 380);
                 cout
-                    << "    fps: " << setw(2) << right << fps
-                    << " center: (" << center.x * 0.1 << ", " << center.y * 0.1 << ", " << center.z * 0.1 << ") cm\r" << flush;
+                    << "    fps: " << fixed << setw(4) << setprecision(1) << right << showpoint << fps
+                    << " center: ("
+                        << setw(8) << setprecision(2) << center.x * 0.1
+                    << ", "
+                        << setw(8) << setprecision(2) << center.y * 0.1
+                    << ", " 
+                        << setw(8) << setprecision(2) << center.z * 0.1
+                    << ") cm\r" << flush;
                 reportTimeStamp = currentTime;
             }
         }
@@ -618,11 +629,14 @@ int main(int argc, const char * argv[]) {
     // Loop endlessly
     } while(!quit);
 
-    if(verbose) cout << endl;
+    if(verbose) {
+        cout << endl;
+    }
 
-    cout << "    Stopping streaming server" << endl;
-
-    Server::shared.stop();
+    if(startServer) {
+        cout << "    Stopping streaming server" << endl;
+        Server::shared.stop();
+    }
 
     cout << "</DepthStream>" << endl;
 
