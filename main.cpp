@@ -6,10 +6,19 @@
 //
 
 #include <iostream>
-#include <chrono>
-#include <depthai/depthai.hpp>
-#include <math.h>
+#include <iomanip>
+#include <chrono> // For steady_clock and time_point
+#include <math.h> // For fabs()
 #include <thread>
+#include <atomic>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h> // For sockaddr_in
+#include <unistd.h> // for read()
+#include <sys/poll.h> // for pollfd()
+#include <termios.h>
+
+#include <depthai/depthai.hpp>
 
 using namespace std;
 using namespace std::chrono;
@@ -33,9 +42,8 @@ class StructuredPointCloud
         StructuredPointCloud(float iCameraIntrinsicFx, float iCameraIntrinsicFy, float iCameraIntrinsicCx, float iCameraIntrinsicCy)
         // Pre-compute inverse transformation factors from camera intrinsics
         : rfx(1.0 / iCameraIntrinsicFx), rfy(1.0 / iCameraIntrinsicFy),
-          cx_over_fx(iCameraIntrinsicCx * rfx), cy_over_fy(iCameraIntrinsicCy * rfy)
-        {
-            cout << "rfx: " << rfx << ", rfy: " << rfy << ", cx_over_fx: " << cx_over_fx << ", cy_over_fy: " << cy_over_fy << endl;
+          cx_over_fx(iCameraIntrinsicCx * rfx), cy_over_fy(iCameraIntrinsicCy * rfy) {
+            // cout << "rfx: " << rfx << ", rfy: " << rfy << ", cx_over_fx: " << cx_over_fx << ", cy_over_fy: " << cy_over_fy << endl;
         }
 
         // Function to convert depth data into cartesian vertices and store them
@@ -192,24 +200,161 @@ class DepthProxy {
         cv::Mat &img;
 };
 
+typedef struct Exception {
+    Exception(const string &iFile, int iLine, int iError, const string &iMsg)
+    : file(iFile), line(iLine), msg(iMsg), err(iError) { }
+    
+    string file, msg;
+    int line, err;
+} Exception;
+
+ostream &operator<<(ostream &os, Exception &e) {
+    os << "Exception caught in file \"" << e.file << "\", on line " << e.line << ", with error " << e.err << ": " << e.msg;
+    return os;
+}
+
+class Connection {
+    public:
+        Connection(int iSocket, sockaddr_in iPeersa)
+        : sock(iSocket), peersa(iPeersa) { }
+
+        virtual ~Connection() {
+            close(sock);
+        }
+
+    protected:
+        int sock;
+        sockaddr_in peersa;
+};
+
+class Server {
+
+    public:
+        static Server shared;
+
+    protected:
+        Server()
+        : listenSock(0), shutdown(false), acceptThread(nullptr) { }
+
+        virtual ~Server() {
+            stop();
+        }
+    
+    public:
+        void start() {
+            if(listenSock) return;
+
+            listenSock = socket(AF_INET, SOCK_STREAM, 0);
+
+            // Retrieve file descriptor status flags
+            int sockFlags = fcntl(listenSock, F_GETFL);
+            // Set non-blocking flag
+            sockFlags |= O_NONBLOCK;
+            // Store file descriptor status flags
+            fcntl(listenSock, F_SETFL, sockFlags);
+            
+            sockaddr_in sa;
+            sa.sin_family = AF_INET;
+            sa.sin_addr.s_addr = INADDR_ANY;
+            sa.sin_port = htons(3060);
+
+            int err;
+            if((err = bind(listenSock, (struct sockaddr *) &sa, sizeof(sa))) < 0) {
+                throw Exception(__FILE__, __LINE__, err, "Unable to bind server socket");
+            }
+
+            if((err = listen(listenSock, 10)) < 0) {
+                throw Exception(__FILE__, __LINE__, err, "Failed to place socket into listening mode");
+            }
+
+            acceptThread = new thread(Server::acceptThreadProc, this);
+        }
+
+        void stop() {
+            if(listenSock) {
+                close(listenSock);
+                listenSock = 0;
+            }
+            if(acceptThread) {
+                acceptThread->join();
+                delete acceptThread;
+                acceptThread = nullptr;
+            }
+        }
+
+        void acceptLoop() {
+            sockaddr_in peersa;
+            auto peersaLen = sizeof(peersa);
+            int newSock;
+            while(!shutdown) {
+                newSock = accept(listenSock, (struct sockaddr *) &peersa, (socklen_t *) &peersaLen);
+                if(newSock < 0) {
+                    if(errno == EWOULDBLOCK) {
+                        sleep(1);
+                    } else {
+                        shutdown = true;
+                    }
+                } else {
+                    connections.push_back(new Connection(newSock, peersa));
+                }
+            }
+        }
+
+    protected:
+        int listenSock;
+        atomic_bool shutdown;
+        thread *acceptThread;
+        vector<Connection *> connections;
+
+        static void acceptThreadProc(Server *iSelf) {
+            iSelf->acceptLoop();
+        }
+};
+
+static struct termios stdTerm, rawTerm;
+
+void setTermRaw(bool echo = true) {
+    tcgetattr(0, &stdTerm);
+    rawTerm = stdTerm;
+    rawTerm.c_lflag &= ~(ICANON | ECHO);
+    if(echo) rawTerm.c_lflag |= ECHO;
+    tcsetattr(0, TCSANOW, &rawTerm);
+}
+
+void resetTerm() {
+    tcsetattr(0, TCSANOW, &stdTerm);
+}
+
+Server Server::shared;
+
 int main(int argc, const char * argv[]) {
 
     bool visualizeDepth = false;
+    bool verbose = false;
+
     for(int a = 1; a < argc; a++) {
         string arg(argv[a]);
         if((arg == "-h") || (arg == "--help")) {
             cout
                 << "Usage: " << argv[0] << " <option(s)>" << endl
                 << "Options: -h, --help\t\tdisplay this message" << endl
-                << "         -d, --visualize\tdisplay depth telemetry" << endl;
+                << "         -d, --depth\t\tdisplay depth telemetry" << endl
+                << "         -v, --verbose\t\tprint capture info to contsole" << endl;
             return 0;
         }
+        
         if((arg == "-d") || (arg == "--depth")) {
-          visualizeDepth = true;
+            visualizeDepth = true;
+        } else if((arg == "-v") || (arg == "--verbose")) {
+            verbose = true;
         }
     }
 
     cout << "<DepthStream>" << endl;
+
+    cout << "  Setting up streaming server" << endl;
+
+    Server::shared.start();
 
     cout << "  Setting up pipeline" << endl;
 
@@ -337,7 +482,7 @@ int main(int argc, const char * argv[]) {
     Device dev(pl);
     auto depthFrameQueue = dev.getOutputQueue("depth_frames", 8, false);
 
-    cout << "  Retrieving camera intrinsics" << endl;
+    cout << "    Retrieving camera intrinsics" << endl;
 
     // Get the intrinsics for the right mono camera
     CalibrationHandler calibration = dev.readCalibration();
@@ -364,7 +509,7 @@ int main(int argc, const char * argv[]) {
     // Instantiate storage for the point cloud
     StructuredPointCloud<640, 400> pc(fx, fy, cx, cy);
 
-    cout << "  Commencing capture (press Ctrl-C to terminate)" << endl;
+    cout << "  Commencing capture (press q to terminate)" << endl;
 
     // Cyclic buffer to calculate simple moving average of fps
     const int bufSize = 20;
@@ -385,6 +530,9 @@ int main(int argc, const char * argv[]) {
 
     int key = 0;
     bool quit = false;
+
+    // Set console to unbuffered mode
+    setTermRaw(false);
 
     do {
 
@@ -420,23 +568,21 @@ int main(int argc, const char * argv[]) {
         (count == bufSize) && (sum -= cyclicBuffer[tail]);
         timeStamp = currentTime;
 
-        // Throttle reporting
-        elapsed = currentTime - reportTimeStamp;
-        float secondsElapsed = float(duration_cast<microseconds>(elapsed).count()) * 0.000001;
-        if(secondsElapsed > 1.0) {
-            const auto &upper_left = pc(50, 20);
-            const auto &upper_right = pc(540, 20);
-            const auto &center = pc(320, 200);
-            const auto &lower_left = pc(50, 380);
-            const auto &lower_right = pc(540, 380);
-            cout
-                << "    fps: " << fps << endl
-                << "    upper_left  (" << upper_left.x * 0.1 << ", " << upper_left.y * 0.1 << ", " << upper_left.z * 0.1 << ") cm" << endl
-                << "    upper_right (" << upper_right.x * 0.1 << ", " << upper_right.y * 0.1 << ", " << upper_right.z * 0.1 << ") cm" << endl
-                << "    center      (" << center.x * 0.1 << ", " << center.y * 0.1 << ", " << center.z * 0.1 << ") cm" << endl
-                << "    lower_left  (" << lower_left.x * 0.1 << ", " << lower_left.y * 0.1 << ", " << lower_left.z * 0.1 << ") cm" << endl
-                << "    lower_right (" << lower_right.x * 0.1 << ", " << lower_right.y * 0.1 << ", " << lower_right.z * 0.1 << ") cm" << endl;
-            reportTimeStamp = currentTime;
+        if(verbose) {
+            // Throttle reporting
+            elapsed = currentTime - reportTimeStamp;
+            float secondsElapsed = float(duration_cast<microseconds>(elapsed).count()) * 0.000001;
+            if(secondsElapsed > 1.0) {
+                const auto &upper_left = pc(50, 20);
+                const auto &upper_right = pc(540, 20);
+                const auto &center = pc(320, 200);
+                const auto &lower_left = pc(50, 380);
+                const auto &lower_right = pc(540, 380);
+                cout
+                    << "    fps: " << setw(2) << right << fps
+                    << " center: (" << center.x * 0.1 << ", " << center.y * 0.1 << ", " << center.z * 0.1 << ") cm\r" << flush;
+                reportTimeStamp = currentTime;
+            }
         }
 
         if(visualizeDepth) {
@@ -454,8 +600,33 @@ int main(int argc, const char * argv[]) {
             quit = (key == 'q') || (key == 'Q');
         }
 
+        // Is data available on stdin?
+        struct pollfd fds;
+        int ret = 0;
+        fds.fd = STDIN_FILENO;
+        fds.events = POLLIN;
+        ret = poll(&fds, 1, 0);
+        if(ret) {
+            key = getc(stdin);
+            switch(key) {
+                case 'q':
+                    quit = true;
+                    break;
+            }
+        }
+
     // Loop endlessly
-  } while(!quit);
+    } while(!quit);
+
+    if(verbose) cout << endl;
+
+    cout << "    Stopping streaming server" << endl;
+
+    Server::shared.stop();
+
+    cout << "</DepthStream>" << endl;
+
+    resetTerm();
 
     return 0;
 }
