@@ -13,10 +13,17 @@
 #include <atomic>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h> // For sockaddr_in
+#include <sys/types.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 #include <unistd.h> // for read()
 #include <sys/poll.h> // for pollfd()
 #include <termios.h>
+#include <signal.h>
 
 #include <depthai/depthai.hpp>
 
@@ -87,20 +94,6 @@ class StructuredPointCloud
         float rfx, rfy, cx_over_fx, cy_over_fy;
         vertex data[WIDTH * HEIGHT];
 };
-
-/*
-template <int WIDTH=640, int HEIGHT=400, class T>
-T replaceZero(cv::Mat &ioImg, T iReplacement) {
-    T max = 0;
-    T *ptr = ioImg.ptr<T>();
-    int i = WIDTH * HEIGHT;
-    while(i--) {
-        if(ptr[i] > max) max = ptr[i];
-        if(!ptr[i]) ptr[i] = iReplacement;
-    }
-    return max;
-}
-*/
 
 template <class T>
 class DepthProxy {
@@ -241,6 +234,10 @@ class Server {
         }
     
     public:
+        const string &ip() const {
+            return ipString;
+        }
+
         void start() {
             if(listenSock) return;
 
@@ -253,7 +250,7 @@ class Server {
             // Store file descriptor status flags
             fcntl(listenSock, F_SETFL, sockFlags);
             
-            sockaddr_in sa;
+            sockaddr_in sa; socklen_t saLen = sizeof(sa);
             sa.sin_family = AF_INET;
             sa.sin_addr.s_addr = INADDR_ANY;
             sa.sin_port = htons(3060);
@@ -262,6 +259,25 @@ class Server {
             if((err = bind(listenSock, (struct sockaddr *) &sa, sizeof(sa))) < 0) {
                 throw Exception(__FILE__, __LINE__, err, "Unable to bind server socket");
             }
+            
+            struct ifreq ifr;
+            ifr.ifr_addr.sa_family = AF_INET;
+            strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ-1);
+            ioctl(listenSock, SIOCGIFADDR, &ifr);
+            ipString = string(inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr));
+
+            /*
+            char ipStrAddr[INET_ADDRSTRLEN+1];
+            struct ifaddrs *ipAddrs;
+            getifaddrs(&ipAddrs);
+            if(ipAddrs != nullptr) {
+                for(struct ifaddrs *next = ipAddrs; next != nullptr; next = next->ifa_next) {
+                    inet_ntop(AF_INET, next->ifa_addr, ipStrAddr, INET_ADDRSTRLEN);
+                    cout << next->ifa_name << " " << ipStrAddr << endl;
+                }
+                freeifaddrs(ipAddrs);
+            }
+            */
 
             if((err = listen(listenSock, 10)) < 0) {
                 throw Exception(__FILE__, __LINE__, err, "Failed to place socket into listening mode");
@@ -302,10 +318,10 @@ class Server {
 
     protected:
         int listenSock;
+        string ipString;
         atomic_bool shutdown;
         thread *acceptThread;
         vector<Connection *> connections;
-
         static void acceptThreadProc(Server *iSelf) {
             iSelf->acceptLoop();
         }
@@ -323,6 +339,12 @@ void setTermRaw(bool echo = true) {
 
 void resetTerm() {
     tcsetattr(0, TCSANOW, &stdTerm);
+}
+
+atomic_bool quit(false);
+struct sigaction oldsa, newsa;
+void sigIntHandler(int iSig) {
+    quit = true;
 }
 
 Server Server::shared;
@@ -354,11 +376,39 @@ int main(int argc, const char * argv[]) {
         }
     }
 
+    // Intercept SIGINT
+    newsa.sa_handler = sigIntHandler;
+    sigemptyset(&newsa.sa_mask);
+    newsa.sa_flags = 0;
+    sigaction(SIGINT, NULL, &oldsa);
+    sigaction(SIGINT, &newsa, NULL);
+    
     cout << "<DepthStream>" << endl;
 
     if(startServer) {
         cout << "  Setting up streaming server" << endl;
-        Server::shared.start();
+        try {
+            // Attempt to start listening
+            Server::shared.start();
+
+            // Attempt to retrieve the local hostname and ip address
+            char hostBuffer[256];
+            char *ipBuffer;
+            struct hostent *hostEnt;
+            int hostname;
+            hostname = gethostname(hostBuffer, sizeof(hostBuffer));
+            if(hostname != -1) {
+                cout << "    " << hostBuffer << ".local:3060 (" << Server::shared.ip() << ":3060)" << endl;
+            } else {
+                cerr << "    Unable to retrieve hostname" << endl;
+            }
+        } catch(Exception &e) {
+            startServer = false;
+            cerr << "  " << e << endl;
+        } catch(...) {
+            startServer = false;
+            cerr << "    Unknown exception while attempting to start streaming server" << endl;
+        }
     }
 
     cout << "  Setting up pipeline" << endl;
@@ -534,7 +584,6 @@ int main(int argc, const char * argv[]) {
     cv::Mat cvRGBImg;
 
     int key = 0;
-    bool quit = false;
 
     // Set console to unbuffered mode
     setTermRaw(false);
@@ -608,7 +657,9 @@ int main(int argc, const char * argv[]) {
             cv::imshow("depth", cvRGBImg);
             // Allow OpenCV to process window and key events
             key = cv::waitKey(1);
-            quit = (key == 'q') || (key == 'Q');
+            if((key == 'q') || (key == 'Q')) {
+                quit = true;
+            }
         }
 
         // Is data available on stdin?
@@ -634,12 +685,16 @@ int main(int argc, const char * argv[]) {
     }
 
     if(startServer) {
-        cout << "    Stopping streaming server" << endl;
+        cout << "  Stopping streaming server" << endl;
         Server::shared.stop();
     }
 
     cout << "</DepthStream>" << endl;
 
+    // Restore original SIGINT handler
+    sigaction(SIGINT, &oldsa, NULL);
+
+    // Restore terminal to original mode
     resetTerm();
 
     return 0;
