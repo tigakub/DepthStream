@@ -13,6 +13,7 @@ include_directories(
     /opt/opencv/include/opencv4
 )
 
-add_executable(DepthStream main.cpp)
+set(SOURCES main.cpp Networking.hpp Exception.cpp Exception.hpp DepthProxy.hpp StructuredPointCloud.hpp)
+add_executable(DepthStream ${SOURCES})
 
 target_link_libraries(DepthStream PRIVATE depthai::opencv ${OpenCV_LIBS})

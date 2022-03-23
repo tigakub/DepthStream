@@ -9,21 +9,14 @@
 #include <iomanip>
 #include <chrono> // For steady_clock and time_point
 #include <math.h> // For fabs()
-#include <thread>
-#include <atomic>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h> // For sockaddr_in
-#include <sys/types.h>
-#include <ifaddrs.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <unistd.h> // for read()
-#include <sys/poll.h> // for pollfd()
+
 #include <termios.h>
 #include <signal.h>
+
+#include "Exception.hpp"
+#include "Networking.hpp"
+#include "DepthProxy.hpp"
+#include "StructuredPointCloud.hpp"
 
 #include <depthai/depthai.hpp>
 
@@ -31,301 +24,6 @@ using namespace std;
 using namespace std::chrono;
 using namespace dai;
 using namespace dai::node;
-
-// Structure to encapsulate a 3D vertex
-typedef struct vertex
-{
-    vertex(float ix = 0.0, float iy = 0.0, float iz = 0.0): x(ix), y(ix), z(iz) { }
-    float x, y, z;
-} vertex;
-
-// Template class to encapsulate a point cloud that knows how to map raw depth data
-// into cartesian 3-space
-template <int WIDTH = 640, int HEIGHT = 400>
-class StructuredPointCloud
-{
-    public:
-        // Constructor which takes camera intrinsics
-        StructuredPointCloud(float iCameraIntrinsicFx, float iCameraIntrinsicFy, float iCameraIntrinsicCx, float iCameraIntrinsicCy)
-        // Pre-compute inverse transformation factors from camera intrinsics
-        : rfx(1.0 / iCameraIntrinsicFx), rfy(1.0 / iCameraIntrinsicFy),
-          cx_over_fx(iCameraIntrinsicCx * rfx), cy_over_fy(iCameraIntrinsicCy * rfy) {
-            // cout << "rfx: " << rfx << ", rfy: " << rfy << ", cx_over_fx: " << cx_over_fx << ", cy_over_fy: " << cy_over_fy << endl;
-        }
-
-        // Function to convert depth data into cartesian vertices and store them
-        void convert(const cv::Mat &iRawDepth) {
-            for(int y = 0; y < HEIGHT; y++) {
-                for(int x = 0; x < WIDTH; x++) {
-                    int i = y * WIDTH + x;
-                    float u = float(x), v = float(y);
-                    float z = float(*iRawDepth.ptr<uint16_t>(y, x));
-                    data[i] = vertex(
-                        z * (u * rfx - cx_over_fx),
-                        z * (v * rfy - cy_over_fy),
-                        z);
-                }
-            }
-        }
-
-        // Function to convert depth data into cartesian vertices and store them
-        void convert(const uint16_t *iRawDepth) {
-            for(int y = 0; y < HEIGHT; y++) {
-                for(int x = 0; x < WIDTH; x++) {
-                    int i = y * WIDTH + x;
-                    float u = float(x), v = float(y);
-                    float z = float(iRawDepth[i]);
-                    data[i] = vertex(
-                        z * (u * rfx - cx_over_fx),
-                        z * (v * rfy - cy_over_fy),
-                        z);
-                }
-            }
-        }
-
-        // Return a const pointer to the point cloud vertices
-        const vertex *cartesianMap() const { return data; }
-
-        const vertex &operator()(int x, int y) const {
-            return data[y * WIDTH + x];
-        }
-
-    protected:
-        float rfx, rfy, cx_over_fx, cy_over_fy;
-        vertex data[WIDTH * HEIGHT];
-};
-
-template <class T>
-class DepthProxy {
-    public:
-        DepthProxy(cv::Mat &iImage) : img(iImage)
-        { }
-
-        int width() const { return img.cols; }
-        int height() const { return img.rows; }
-
-        T value(int x, int y) const { return img.ptr<T>()[y * width() + x]; }
-        T &value(int x, int y) { return img.ptr<T>()[y * width() + x]; }
-
-        T replaceZero(T iReplacement) {
-            T max = 0;
-            T *ptr = img.ptr<T>();
-            int i = width() * height();
-            while(i--) {
-                if(ptr[i] > max) max = ptr[i];
-                if(!ptr[i]) ptr[i] = iReplacement;
-            }
-        }
-
-        static void interpolateZeroThreadFunc(DepthProxy<T> *iSelf, int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, int iStartY, int iRows) {
-            iSelf->interpolateZeroBlock(iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, iStartY, iRows);
-        }
-
-        void interpolateZero(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, bool iMultithreaded = true) {
-            if(iMultithreaded) {
-                vector<thread *> threads;
-                int h = iMaxSearch << 1;
-                for(int y = 0; y < height(); y += iMaxSearch) {
-                    if((y + h) > height()) h = height() - y;
-                    threads.push_back(
-                        new thread(DepthProxy<T>::interpolateZeroThreadFunc, this, iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, y, h)
-                    );
-                }
-                for(auto *aThread : threads) {
-                    aThread->join();
-                    delete aThread;
-                }
-            } else {
-                interpolateZeroBlock(iMaxSearch, iMaxDif, iDefaultReplacement, iCutoff, 0, height());
-            }
-        }
-
-        void interpolateZeroBlock(int iMaxSearch, T iMaxDif, T iDefaultReplacement, T iCutoff, int iStartY, int iRows) {
-            for(int y = iStartY; y < iStartY + iRows; y++) {
-                for(int x = 0; x < width(); x++) {
-                    if(!value(x, y)) {
-                        int usex = 0, minx, maxx; T xval1, xval2;
-                        int usey = 0, miny, maxy; T yval1, yval2;
-                        for(int i = 1; (i < iMaxSearch) && (usex < 3) && (usey < 3); i++) {
-                            int lowerx(x - i), upperx(x + i), lowery(y - i), uppery(y + i);
-                            if((lowerx >= 0) && (xval1 = value(lowerx, y))) {
-                                usex |= 1;
-                                minx = lowerx;
-                            }
-                            if((upperx < width()) && (xval2 = value(upperx, y))) {
-                                usex |= 2;
-                                maxx = upperx;
-                            }
-                            if((lowery >= 0) && (yval1 = value(x, lowery))) {
-                                usey |= 1;
-                                miny = lowery;
-                            }
-                            if((uppery < height()) && (yval2 = value(x, uppery))) {
-                                usey |= 2;
-                                maxy = uppery;
-                            }
-                        }
-                        float xrange(xval2 - xval1), yrange(yval2 - yval1);
-                        if((usex == 3) && (fabs(xrange) < iMaxDif)) {
-                            float xstep = float(xrange) / float(maxx - minx);
-                            float newx = xval1 + xstep;
-                            for(int ix = minx + 1; ix < maxx; ix++, newx += xstep) {
-                                value(ix, y) = T(newx);
-                            }
-                        } else if((usey == 3) && (fabs(yrange) < iMaxDif)) {
-                            float ystep = float(yrange) / float(maxy - miny);
-                            float newy = yval1 + ystep;
-                            for(int iy = miny + 1; iy < maxy; iy++, newy += ystep) {
-                                value(x, iy) = T(newy);
-                            }
-                        } else {
-                            value(x, y) = iDefaultReplacement;
-                        }
-                    }
-                    if(value(x, y) > iCutoff) {
-                        value(x, y) = iDefaultReplacement;
-                    }
-                }
-            }
-        }
-
-    protected:
-        cv::Mat &img;
-};
-
-typedef struct Exception {
-    Exception(const string &iFile, int iLine, int iError, const string &iMsg)
-    : file(iFile), line(iLine), msg(iMsg), err(iError) { }
-    
-    string file, msg;
-    int line, err;
-} Exception;
-
-ostream &operator<<(ostream &os, Exception &e) {
-    os << "Exception caught in file \"" << e.file << "\", on line " << e.line << ", with error " << e.err << ": " << e.msg;
-    return os;
-}
-
-class Connection {
-    public:
-        Connection(int iSocket, sockaddr_in iPeersa)
-        : sock(iSocket), peersa(iPeersa) { }
-
-        virtual ~Connection() {
-            close(sock);
-        }
-
-    protected:
-        int sock;
-        sockaddr_in peersa;
-};
-
-class Server {
-
-    public:
-        static Server shared;
-
-    protected:
-        Server()
-        : listenSock(0), shutdown(false), acceptThread(nullptr) { }
-
-        virtual ~Server() {
-            stop();
-        }
-    
-    public:
-        const string &ip() const {
-            return ipString;
-        }
-
-        void start() {
-            if(listenSock) return;
-
-            listenSock = socket(AF_INET, SOCK_STREAM, 0);
-
-            // Retrieve file descriptor status flags
-            int sockFlags = fcntl(listenSock, F_GETFL);
-            // Set non-blocking flag
-            sockFlags |= O_NONBLOCK;
-            // Store file descriptor status flags
-            fcntl(listenSock, F_SETFL, sockFlags);
-            
-            sockaddr_in sa; socklen_t saLen = sizeof(sa);
-            sa.sin_family = AF_INET;
-            sa.sin_addr.s_addr = INADDR_ANY;
-            sa.sin_port = htons(3060);
-
-            int err;
-            if((err = bind(listenSock, (struct sockaddr *) &sa, sizeof(sa))) < 0) {
-                throw Exception(__FILE__, __LINE__, err, "Unable to bind server socket");
-            }
-            
-            struct ifreq ifr;
-            ifr.ifr_addr.sa_family = AF_INET;
-            strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ-1);
-            ioctl(listenSock, SIOCGIFADDR, &ifr);
-            ipString = string(inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr));
-
-            /*
-            char ipStrAddr[INET_ADDRSTRLEN+1];
-            struct ifaddrs *ipAddrs;
-            getifaddrs(&ipAddrs);
-            if(ipAddrs != nullptr) {
-                for(struct ifaddrs *next = ipAddrs; next != nullptr; next = next->ifa_next) {
-                    inet_ntop(AF_INET, next->ifa_addr, ipStrAddr, INET_ADDRSTRLEN);
-                    cout << next->ifa_name << " " << ipStrAddr << endl;
-                }
-                freeifaddrs(ipAddrs);
-            }
-            */
-
-            if((err = listen(listenSock, 10)) < 0) {
-                throw Exception(__FILE__, __LINE__, err, "Failed to place socket into listening mode");
-            }
-
-            acceptThread = new thread(Server::acceptThreadProc, this);
-        }
-
-        void stop() {
-            if(listenSock) {
-                close(listenSock);
-                listenSock = 0;
-            }
-            if(acceptThread) {
-                acceptThread->join();
-                delete acceptThread;
-                acceptThread = nullptr;
-            }
-        }
-
-        void acceptLoop() {
-            sockaddr_in peersa;
-            auto peersaLen = sizeof(peersa);
-            int newSock;
-            while(!shutdown) {
-                newSock = accept(listenSock, (struct sockaddr *) &peersa, (socklen_t *) &peersaLen);
-                if(newSock < 0) {
-                    if(errno == EWOULDBLOCK) {
-                        sleep(1);
-                    } else {
-                        shutdown = true;
-                    }
-                } else {
-                    connections.push_back(new Connection(newSock, peersa));
-                }
-            }
-        }
-
-    protected:
-        int listenSock;
-        string ipString;
-        atomic_bool shutdown;
-        thread *acceptThread;
-        vector<Connection *> connections;
-        static void acceptThreadProc(Server *iSelf) {
-            iSelf->acceptLoop();
-        }
-};
 
 static struct termios stdTerm, rawTerm;
 
@@ -349,21 +47,29 @@ void sigIntHandler(int iSig) {
 
 Server Server::shared;
 
+void printUsage(const string &iAppName) {
+    cout
+        << "Usage: " << iAppName << " <option(s)>" << endl
+        << "Options: -h, --help\t\tdisplay this message" << endl
+        << "         -d, --depth\t\tdisplay depth telemetry" << endl
+        << "         -v, --verbose\t\tprint capture info to contsole" << endl
+        << "         -s, --server\t\tstart server" << endl;
+}
+
 int main(int argc, const char * argv[]) {
+    Connection client;
 
     bool visualizeDepth = false;
     bool verbose = false;
     bool startServer = false;
+    bool startClient = false;
+    string host;
+    int port;
 
     for(int a = 1; a < argc; a++) {
         string arg(argv[a]);
         if((arg == "-h") || (arg == "--help")) {
-            cout
-                << "Usage: " << argv[0] << " <option(s)>" << endl
-                << "Options: -h, --help\t\tdisplay this message" << endl
-                << "         -d, --depth\t\tdisplay depth telemetry" << endl
-                << "         -v, --verbose\t\tprint capture info to contsole" << endl
-                << "         -s, --server\t\tstart server" << endl;
+            printUsage(argv[0]);
             return 0;
         }
         
@@ -372,7 +78,25 @@ int main(int argc, const char * argv[]) {
         } else if((arg == "-v") || (arg == "--verbose")) {
             verbose = true;
         } else if((arg == "-s") || (arg == "--server")) {
+            if(startClient) {
+                cerr << "The -s and -c options are mutually exclusive" << endl;
+                return 0;
+            }
             startServer = true;
+        } else if((arg == "-c") || (arg == "--connect")) {
+            if(startServer) {
+                cerr << "The -s and -c options are mutually exclusive" << endl;
+                return 0;
+            }
+            if((a+2) >= argc) {
+                printUsage(argv[0]);
+                return 0;
+            } else {
+                startClient = true;
+                host = argv[a+1];
+                port = stoi(argv[a+2]);
+                a += 2;
+            }
         }
     }
 
@@ -411,9 +135,39 @@ int main(int argc, const char * argv[]) {
         }
     }
 
+    if(startClient) {
+        cout << "  Starting connection to " << host << ":" << port << endl;
+        try {
+            client.connect(host, port);
+        } catch(Exception &e) {
+            cout << e << endl;
+            startClient = false;
+        }
+    }
+
     cout << "  Setting up pipeline" << endl;
 
     Pipeline pl;
+
+    //----------------
+    // Create IMU Node
+    //----------------
+
+    cout << "    Creating IMU node" << endl;
+
+    auto imu = pl.create<IMU>();
+
+    // Enable fused orientation at 60 Hz
+    imu->enableIMUSensor(IMUSensor::ROTATION_VECTOR, 60);
+    // Don't really know what this means. How can you ever receive
+    // more than 1 packet at a time?!? If I specify anything higher
+    // than 1, does that mean the camera will delay sending them
+    // until the specified number of packets has been accumulated?
+    // Not really sure when you would EVER want that.
+    imu->setBatchReportThreshold(1);
+    // Stop sending if the queue gets backed up until host can pull some off
+    imu->setMaxBatchReports(5);
+
     //------------------------
     // Create MonoCamera Nodes
     //------------------------
@@ -511,6 +265,14 @@ int main(int argc, const char * argv[]) {
     // Node Linking
     //-------------
 
+    cout << "    Linking IMU to output node" << endl;
+
+    // Feed IMU telemetry to an output stream
+    auto imuOutput = pl.create<XLinkOut>();
+    imuOutput->setStreamName("rotation_frames");
+
+    imu->out.link(imuOutput->input);
+
     cout << "    Linking mono camera nodes to stereo depth node" << endl;
 
     // Feed the left and right monochrome camera outputs into
@@ -533,9 +295,11 @@ int main(int argc, const char * argv[]) {
     cout << "    Retrieving reference to depth frame output queue" << endl;
 
     // Instantiate a device for the pipeline and get a reference to
-    // the queue associated with the stream named "depth"
+    // the queues associated with the streams named "depth_frames"
+    // and "rotation_frames"
     Device dev(pl);
     auto depthFrameQueue = dev.getOutputQueue("depth_frames", 8, false);
+    auto rotationFrameQueue = dev.getOutputQueue("rotation_frames", 8, false);
 
     cout << "    Retrieving camera intrinsics" << endl;
 
@@ -589,6 +353,20 @@ int main(int argc, const char * argv[]) {
     setTermRaw(false);
 
     do {
+        // Get the latest rotation frame
+        auto rotationFrame = rotationFrameQueue->get<IMUData>();
+        auto rotationPackets = rotationFrame->packets;
+
+        float qi, qj, qk, qw, qaccuracy;
+        if(rotationPackets.size()) {
+            auto &packet = rotationPackets.back();
+            auto rotation = packet.rotationVector;
+            qi = rotation.i;
+            qj = rotation.j;
+            qk = rotation.k;
+            qw = rotation.real;
+            qaccuracy = rotation.rotationVectorAccuracy;
+        }
 
         // Get the latest depth frame
         auto depthImgFrame = depthFrameQueue->get<ImgFrame>();
@@ -605,6 +383,18 @@ int main(int argc, const char * argv[]) {
 
         // Get a direct pointer to the raw depth buffer
         uint16_t *rawDepth = (uint16_t *) cvDepthImg.ptr<uint16_t>();
+
+        Connection::Bfr *buf = client.recoverSendBuffer();
+        if(!buf) {
+            buf = new Connection::Bfr();
+        }
+
+        uint16_t *bufPtr = (uint16_t *) buf->getPayload();
+        Connection::Hdr &header = buf->getHeader();
+        int i = 256;
+        while(i--) bufPtr[i] = rawDepth[i];
+        header.payloadSize = 1024;
+        client.submitSendBuffer(buf);
 
         // Pass the raw pointer to the StructuredPointCloud object for mapping into 3-space
         pc.convert(rawDepth);
@@ -640,7 +430,15 @@ int main(int argc, const char * argv[]) {
                         << setw(8) << setprecision(2) << center.y * 0.1
                     << ", " 
                         << setw(8) << setprecision(2) << center.z * 0.1
-                    << ") cm\r" << flush;
+                    << ") cm"
+                    << " rotation: q("
+                        << setw(8) << setprecision(2) << qi
+                        << setw(8) << setprecision(2) << qj
+                        << setw(8) << setprecision(2) << qk
+                        << setw(8) << setprecision(2) << qw
+                    << ") accuracy: "
+                        << setw(8) << setprecision(2) << qaccuracy
+                        << "\r" << flush;
                 reportTimeStamp = currentTime;
             }
         }
@@ -687,6 +485,10 @@ int main(int argc, const char * argv[]) {
     if(startServer) {
         cout << "  Stopping streaming server" << endl;
         Server::shared.stop();
+    }
+
+    if(startClient) {
+        client.stop();
     }
 
     cout << "</DepthStream>" << endl;
