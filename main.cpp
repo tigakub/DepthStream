@@ -388,7 +388,7 @@ int main(int argc, const char * argv[]) {
 
         time_point<steady_clock> currentTime = steady_clock::now();
 
-        if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 1.0) {
+        if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.125) {
             Connection::Bfr *buf = client.recoverSendBuffer();
             if(!buf) {
                 buf = new Connection::Bfr();

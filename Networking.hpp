@@ -157,6 +157,8 @@ class Connection {
         }
 
         void accept(int iSocket, struct sockaddr_in iPeersa) {
+            sock = iSocket;
+            
             // Retrieve file descriptor status flags
             int sockFlags = fcntl(sock, F_GETFL);
             // Set non-blocking flag
