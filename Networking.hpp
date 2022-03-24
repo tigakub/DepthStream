@@ -30,7 +30,7 @@ class Server;
 class Connection {
     public:
         typedef struct Hdr {
-            int payloadSize;
+            uint32_t payloadSize;
 
             void hostToNet() {
                 payloadSize = htonl(payloadSize);
@@ -45,7 +45,7 @@ class Connection {
         friend class Connection;
 
         public:
-            Bfr(int iCapacity = 1024000)
+            Bfr(uint32_t iCapacity = 1024000)
             : payload(new char[iCapacity]), capacity(iCapacity) { }
 
             virtual ~Bfr() {
@@ -54,7 +54,7 @@ class Connection {
 
             char *getPayload() { return payload; }
 
-            void growIfNeeded(int iCapacity) {
+            void growIfNeeded(uint32_t iCapacity) {
                 if(iCapacity > capacity) {
                     delete [] payload;
                     payload = new char[iCapacity];
@@ -62,14 +62,14 @@ class Connection {
                 }
             }
 
-            int getCapacity() { return capacity; }
+            uint32_t getCapacity() { return capacity; }
 
             Hdr &getHeader() { return header; }
 
         protected:
             Hdr header;
             char *payload;
-            int capacity;
+            uint32_t capacity;
         };
 
     protected:
@@ -84,13 +84,13 @@ class Connection {
                 Ndx()
                 : payload(nullptr), index(0), payloadSize(0) { }
 
-                void set(char *iBuffer, int iDataSize) {
+                void set(char *iBuffer, uint32_t iDataSize) {
                     payload = iBuffer;
                     index = 0;
                     payloadSize = iDataSize;
                 }
 
-                int remaining() {
+                uint32_t remaining() {
                     return payloadSize - index;
                 }
 
@@ -106,8 +106,8 @@ class Connection {
                 }
 
                 char *payload;
-                int index;
-                int payloadSize;
+                uint32_t index;
+                uint32_t payloadSize;
         };
 
     public:
@@ -211,7 +211,7 @@ class Connection {
         void recvLoop() {
             fd_set sockSet;
             struct timeval timeout;
-            int byteCount = 0;
+            uint32_t byteCount = 0;
             Bfr *currentBuf;
             Mode mode = IDLE;
             Hdr swappedHeader;
@@ -238,8 +238,8 @@ class Connection {
                     }
                     if(currentBuf) {
                         int rcvdBytes = read(sock, recvIndex.next(), recvIndex.remaining());
-                        if(rcvdBytes) {
-                            recvIndex.advance(rcvdBytes);
+                        if(rcvdBytes > 0) {
+                            recvIndex.advance(uint32_t(rcvdBytes));
                             if(!recvIndex.remaining()) {
                                 switch(mode) {
                                     case HEADER:
@@ -311,11 +311,11 @@ class Connection {
                     }
                 }
                 if(currentBuf) {
-                    int bytesToSend = sendIndex.remaining();
+                    uint32_t bytesToSend = sendIndex.remaining();
                     if(bytesToSend > 1024) bytesToSend = 1024;
                     int sentBytes = send(sock, sendIndex.next(), bytesToSend, 0);
                     if(sentBytes > 0) {
-                        sendIndex.advance(sentBytes);
+                        sendIndex.advance(uint32_t(sentBytes));
                         if(!sendIndex.remaining()) {
                             switch(mode) {
                                 case HEADER:

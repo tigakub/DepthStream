@@ -344,6 +344,8 @@ int main(int argc, const char * argv[]) {
     // And a timestamp for throttling the output
     time_point<steady_clock> reportTimeStamp = timeStamp;
 
+    time_point<steady_clock> frameTimeStamp = timeStamp;
+
     // Image buffer to store color conversion from greyscale depth
     cv::Mat cvRGBImg;
 
@@ -384,23 +386,28 @@ int main(int argc, const char * argv[]) {
         // Get a direct pointer to the raw depth buffer
         uint16_t *rawDepth = (uint16_t *) cvDepthImg.ptr<uint16_t>();
 
-        Connection::Bfr *buf = client.recoverSendBuffer();
-        if(!buf) {
-            buf = new Connection::Bfr();
-        }
+        time_point<steady_clock> currentTime = steady_clock::now();
 
-        uint16_t *bufPtr = (uint16_t *) buf->getPayload();
-        Connection::Hdr &header = buf->getHeader();
-        int i = 256;
-        while(i--) bufPtr[i] = rawDepth[i];
-        header.payloadSize = 1024;
-        client.submitSendBuffer(buf);
+        if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 1.0) {
+            Connection::Bfr *buf = client.recoverSendBuffer();
+            if(!buf) {
+                buf = new Connection::Bfr();
+            }
+
+            uint16_t *bufPtr = (uint16_t *) buf->getPayload();
+            Connection::Hdr &header = buf->getHeader();
+            int i = 640*400;
+            while(i--) bufPtr[i] = rawDepth[i];
+            header.payloadSize = 1024000;
+            client.submitSendBuffer(buf);
+
+            frameTimeStamp = currentTime;
+        }
 
         // Pass the raw pointer to the StructuredPointCloud object for mapping into 3-space
         pc.convert(rawDepth);
 
         // Calculate moving average of fps
-        time_point<steady_clock> currentTime = steady_clock::now();
         auto elapsed = currentTime - timeStamp;
         float instantaneousFPS = 1000000.0 / float (duration_cast<microseconds>(elapsed).count());
         cyclicBuffer[tail] = instantaneousFPS;
@@ -433,8 +440,11 @@ int main(int argc, const char * argv[]) {
                     << ") cm"
                     << " rotation: q("
                         << setw(8) << setprecision(2) << qi
+                    << ", "
                         << setw(8) << setprecision(2) << qj
+                    << ", "
                         << setw(8) << setprecision(2) << qk
+                    << ", "
                         << setw(8) << setprecision(2) << qw
                     << ") accuracy: "
                         << setw(8) << setprecision(2) << qaccuracy
