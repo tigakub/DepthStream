@@ -14,7 +14,8 @@
 #include <signal.h>
 
 #include "Exception.hpp"
-#include "Networking.hpp"
+#include "Server.hpp"
+#include "Connection.hpp"
 #include "DepthProxy.hpp"
 #include "StructuredPointCloud.hpp"
 
@@ -45,19 +46,37 @@ void sigIntHandler(int iSig) {
     quit = true;
 }
 
-Server Server::shared;
+class ServerBufferFunctor : public Connection::BfrFunctor
+{
+    virtual void operator()(Connection &cnx, Connection::Bfr &buf) {
+        cout << ".";
+    }
+};
+
+class ClientBufferFunctor : public Connection::BfrFunctor
+{
+    virtual void operator()(Connection &cnx, Connection::Bfr &buf) {
+        cout << ".";
+    }
+};
+
+ServerBufferFunctor serverFunctor;
+
+Server Server::shared("en0", serverFunctor);
 
 void printUsage(const string &iAppName) {
     cout
         << "Usage: " << iAppName << " <option(s)>" << endl
-        << "Options: -h, --help\t\tdisplay this message" << endl
-        << "         -d, --depth\t\tdisplay depth telemetry" << endl
-        << "         -v, --verbose\t\tprint capture info to contsole" << endl
-        << "         -s, --server\t\tstart server" << endl;
+        << "Options: -h, --help\t\t\tdisplay this message" << endl
+        << "         -d, --depth\t\t\tdisplay depth telemetry" << endl
+        << "         -v, --verbose\t\t\tprint capture info to contsole" << endl
+        << "         -s, --server\t\t\tstart server" << endl
+        << "         -c, --connect <ip> <port>\tconnect to server" << endl;
 }
 
 int main(int argc, const char * argv[]) {
-    Connection client;
+    ClientBufferFunctor clientFunctor;
+    Connection client(clientFunctor);
 
     bool visualizeDepth = false;
     bool verbose = false;
@@ -380,7 +399,7 @@ int main(int argc, const char * argv[]) {
         // If a zero depth has non-zero neighbors within 20 pixels, and not more than 100 mm difference
         // then interpolate linearly between the neighboring values. Otherwise, replace the zero with
         // the max depth.
-        proxy.interpolateZero(10, 100, 33119, 3000);
+        proxy.interpolateZero(10, 100, 33119, 10000);
         // proxy.replaceZero(33119);
 
         // Get a direct pointer to the raw depth buffer
@@ -388,20 +407,22 @@ int main(int argc, const char * argv[]) {
 
         time_point<steady_clock> currentTime = steady_clock::now();
 
-        if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.125) {
-            Connection::Bfr *buf = client.recoverSendBuffer();
-            if(!buf) {
-                buf = new Connection::Bfr();
+        if(startClient) {
+            if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.05) {
+                Connection::Bfr *buf = client.recoverSendBuffer();
+                if(!buf) {
+                    buf = new Connection::Bfr();
+                }
+
+                uint16_t *bufPtr = (uint16_t *) buf->getPayload();
+                Connection::Hdr &header = buf->getHeader();
+                int i = 640*400;
+                while(i--) bufPtr[i] = rawDepth[i];
+                header.payloadSize = 1024000;
+                client.submitSendBuffer(buf);
+
+                frameTimeStamp = currentTime;
             }
-
-            uint16_t *bufPtr = (uint16_t *) buf->getPayload();
-            Connection::Hdr &header = buf->getHeader();
-            int i = 640*400;
-            while(i--) bufPtr[i] = rawDepth[i];
-            header.payloadSize = 1024000;
-            client.submitSendBuffer(buf);
-
-            frameTimeStamp = currentTime;
         }
 
         // Pass the raw pointer to the StructuredPointCloud object for mapping into 3-space

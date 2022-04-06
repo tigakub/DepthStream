@@ -1,6 +1,15 @@
-#ifndef __NETWORKING_HPP__
-#define __HETWORKING_HPP__
+//
+//  Connection.hpp
+//  SocketServer
+//
+//  Created by Edward Janne on 4/1/22.
+//
 
+#ifndef Connection_hpp
+#define Connection_hpp
+
+#include <stdio.h>
+#include <sys/types.h>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -21,6 +30,7 @@
 #include <deque>
 #include <cstring>
 
+#include "Semaphore.hpp"
 #include "Exception.hpp"
 
 using namespace std;
@@ -41,40 +51,97 @@ class Connection {
             }
         } Hdr;
 
-    class Bfr {
-        friend class Connection;
+        class Bfr {
+            friend class Connection;
 
-        public:
-            Bfr(uint32_t iCapacity = 1024000)
-            : payload(new char[iCapacity]), capacity(iCapacity) { }
+            public:
+                Bfr(uint32_t iCapacity = 1024000)
+                : payload(new char[iCapacity]), capacity(iCapacity) { }
 
-            virtual ~Bfr() {
-                if(payload) delete [] payload;
-            }
-
-            char *getPayload() { return payload; }
-
-            void growIfNeeded(uint32_t iCapacity) {
-                if(iCapacity > capacity) {
-                    delete [] payload;
-                    payload = new char[iCapacity];
-                    capacity = iCapacity;
+                virtual ~Bfr() {
+                    if(payload) delete [] payload;
                 }
-            }
 
-            uint32_t getCapacity() { return capacity; }
+                char *getPayload() { return payload; }
 
-            Hdr &getHeader() { return header; }
+                void growIfNeeded(uint32_t iCapacity) {
+                    if(iCapacity > capacity) {
+                        delete [] payload;
+                        payload = new char[iCapacity];
+                        capacity = iCapacity;
+                    }
+                }
 
-        protected:
-            Hdr header;
-            char *payload;
-            uint32_t capacity;
+                uint32_t getCapacity() { return capacity; }
+
+                Hdr &getHeader() { return header; }
+
+            protected:
+                Hdr header;
+                char *payload;
+                uint32_t capacity;
+            };
+        
+        class BfrFunctor {
+            public:
+                virtual void operator()(Connection &, Bfr &) = 0;
+        };
+    
+        class BfrHandler {
+            public:
+                BfrHandler(Connection &iCnx, BfrFunctor &iFunctor)
+                : cnx(iCnx), handlerThread(nullptr), functor(iFunctor), alive(false), sem() { }
+                
+                virtual ~BfrHandler() {
+                    stop();
+                }
+                
+                void start() {
+                    if(handlerThread) return;
+                    handlerThread = new thread(BfrHandler::handlerProc, this);
+                }
+                
+                void stop() {
+                    alive = false;
+                    if(handlerThread) {
+                        sem.signal();
+                        handlerThread->join();
+                        delete handlerThread;
+                        handlerThread = nullptr;
+                    }
+                }
+                
+                void handlerLoop() {
+                    alive = true;
+                    Bfr *aBuf;
+                    while(alive) {
+                        sem.wait();
+                        if(!alive) return;
+                        aBuf = cnx.popRecvBuffer();
+                        if(aBuf) {
+                            functor(cnx, *aBuf);
+                            cnx.returnRecvBuffer(aBuf);
+                        }
+                    }
+                }
+                
+                void signal() {
+                    sem.signal();
+                }
+                
+            protected:
+                static void handlerProc(BfrHandler *iSelf) {
+                    iSelf->handlerLoop();
+                }
+                Connection &cnx;
+                thread *handlerThread;
+                BfrFunctor &functor;
+                atomic_bool alive;
+                Semaphore sem;
         };
 
     protected:
         typedef enum {
-            IDLE = 0,
             HEADER = 1,
             PAYLOAD = 2
         } Mode;
@@ -111,9 +178,9 @@ class Connection {
         };
 
     public:
-        Connection(Server *iServer = nullptr)
-        : server(iServer), 
-          sock(0), sockPipe(0), peersa(), 
+        Connection(BfrFunctor &iFunctor, Server *iServer = nullptr)
+        : server(iServer),
+          sock(0), sockPipe(0), peersa(),
           recvThread(nullptr),
           sendThread(nullptr),
           performShutdown(false),
@@ -121,7 +188,8 @@ class Connection {
           returnLock(), returnQueue(),
           recvLock(), recvQueue(),
           poolLock(), poolQueue(),
-          sendIndex(), recvIndex() {
+          sendIndex(), recvIndex(),
+          bfrHandler(*this, iFunctor) {
         }
 
         virtual ~Connection() {
@@ -165,7 +233,7 @@ class Connection {
             sockFlags |= O_NONBLOCK;
             // Store file descriptor status flags
             fcntl(sock, F_SETFL, sockFlags);
-
+            
             peersa = iPeersa;
 
             recvThread = new thread(Connection::recvThreadProc, this);
@@ -209,37 +277,54 @@ class Connection {
             recvThread = new thread(Connection::recvThreadProc, this);
             sendThread = new thread(Connection::sendThreadProc, this);
         }
+        
+        Bfr *popRecvBuffer() {
+            Bfr *aBuf = nullptr;
+            recvLock.lock();
+            if(recvQueue.size()) {
+                aBuf = recvQueue.front();
+                recvQueue.pop_front();
+            }
+            recvLock.unlock();
+            return aBuf;
+        }
+        
+        void returnRecvBuffer(Bfr *iBuf) {
+            poolLock.lock();
+            poolQueue.push_back(iBuf);
+            poolLock.unlock();
+        }
 
         void recvLoop() {
             fd_set sockSet;
             struct timeval timeout;
-            uint32_t byteCount = 0;
-            Bfr *currentBuf;
-            Mode mode = IDLE;
+            Bfr *currentBuf = nullptr;
+            Mode mode = HEADER;
             Hdr swappedHeader;
             sockPipe |= 1;
+            bfrHandler.start();
             while(!performShutdown) {
-                FD_ZERO(&sockSet);
-                FD_SET(sock, &sockSet);
-                timeout.tv_sec = 1;
-                timeout.tv_usec = 0;
-                int n = select(sock+1, &sockSet, NULL, NULL, &timeout);
-                if(n == -1) performShutdown = true;
-                if(n > 0) {
-                    if(!currentBuf) {
-                        poolLock.lock();
-                        if(poolQueue.size()) {
-                            currentBuf = poolQueue.front();
-                            poolQueue.pop_front();
-                        } else {
-                            currentBuf = new Bfr();
-                        }
-                        poolLock.unlock();
-                        recvIndex.set((char *) &swappedHeader, sizeof(swappedHeader));
-                        mode = HEADER;
+                if(!currentBuf) {
+                    poolLock.lock();
+                    if(poolQueue.size()) {
+                        currentBuf = poolQueue.front();
+                        poolQueue.pop_front();
+                    } else {
+                        currentBuf = new Bfr();
                     }
-                    if(currentBuf) {
-                        int rcvdBytes = read(sock, recvIndex.next(), recvIndex.remaining());
+                    poolLock.unlock();
+                    recvIndex.set((char *) &swappedHeader, sizeof(swappedHeader));
+                    mode = HEADER;
+                }
+                if(currentBuf) {
+                    FD_ZERO(&sockSet);
+                    FD_SET(sock, &sockSet);
+                    timeout.tv_sec = 1;
+                    timeout.tv_usec = 0;
+                    int n = select(sock+1, &sockSet, NULL, NULL, &timeout);
+                    if(n < 0) performShutdown = true;
+                    if(n > 0) {
+                        ssize_t rcvdBytes = read(sock, recvIndex.next(), recvIndex.remaining());
                         if(rcvdBytes > 0) {
                             recvIndex.advance(uint32_t(rcvdBytes));
                             if(!recvIndex.remaining()) {
@@ -255,8 +340,9 @@ class Connection {
                                         recvLock.lock();
                                         recvQueue.push_back(currentBuf);
                                         recvLock.unlock();
+                                        bfrHandler.signal();
                                         currentBuf = nullptr;
-                                        mode = IDLE;
+                                        mode = HEADER;
                                         break;
                                 }
                             }
@@ -266,6 +352,7 @@ class Connection {
                     }
                 }
             }
+            bfrHandler.stop();
             shutdown(sock, SHUT_RD);
             char *tmpBuf[256];
             while(read(sock, tmpBuf, 256) > 0);
@@ -294,7 +381,7 @@ class Connection {
 
         void sendLoop() {
             Bfr *currentBuf = nullptr;
-            Mode mode = IDLE;
+            Mode mode = HEADER;
             Hdr swappedHeader;
             sockPipe |= 2;
             while(!performShutdown) {
@@ -315,7 +402,7 @@ class Connection {
                 if(currentBuf) {
                     uint32_t bytesToSend = sendIndex.remaining();
                     if(bytesToSend > 1024) bytesToSend = 1024;
-                    int sentBytes = send(sock, sendIndex.next(), bytesToSend, 0);
+                    ssize_t sentBytes = send(sock, sendIndex.next(), bytesToSend, 0);
                     if(sentBytes > 0) {
                         sendIndex.advance(uint32_t(sentBytes));
                         if(!sendIndex.remaining()) {
@@ -329,7 +416,7 @@ class Connection {
                                     returnQueue.push_back(currentBuf);
                                     returnLock.unlock();
                                     currentBuf = nullptr;
-                                    mode = IDLE;
+                                    mode = HEADER;
                                     break;
                             }
                         }
@@ -390,137 +477,7 @@ class Connection {
         mutex poolLock;
         deque<Bfr *> poolQueue;
         Ndx sendIndex, recvIndex;
+        BfrHandler bfrHandler;
 };
 
-class Server {
-
-    public:
-        static Server shared;
-
-    protected:
-        Server()
-        : listenSock(0), shutdown(false), acceptThread(nullptr) { }
-
-        virtual ~Server() {
-            stop();
-            while(connections.size()) {
-                Connection *aConnection = connections.back();
-                connections.pop_back();
-                delete aConnection;
-            }
-        }
-    
-    public:
-        const string &ip() const {
-            return ipString;
-        }
-
-        void start() {
-            if(listenSock) return;
-
-            listenSock = socket(AF_INET, SOCK_STREAM, 0);
-
-            // Retrieve file descriptor status flags
-            int sockFlags = fcntl(listenSock, F_GETFL);
-            // Set non-blocking flag
-            sockFlags |= O_NONBLOCK;
-            // Store file descriptor status flags
-            fcntl(listenSock, F_SETFL, sockFlags);
-            
-            sockaddr_in sa; socklen_t saLen = sizeof(sa);
-            sa.sin_family = AF_INET;
-            sa.sin_addr.s_addr = INADDR_ANY;
-            sa.sin_port = htons(3060);
-
-            int err;
-            if((err = bind(listenSock, (struct sockaddr *) &sa, sizeof(sa))) < 0) {
-                throw Exception(__FILE__, __LINE__, err, "Unable to bind server socket");
-            }
-            
-            struct ifreq ifr;
-            ifr.ifr_addr.sa_family = AF_INET;
-            strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ-1);
-            ioctl(listenSock, SIOCGIFADDR, &ifr);
-            ipString = string(inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr));
-
-            /*
-            char ipStrAddr[INET_ADDRSTRLEN+1];
-            struct ifaddrs *ipAddrs;
-            getifaddrs(&ipAddrs);
-            if(ipAddrs != nullptr) {
-                for(struct ifaddrs *next = ipAddrs; next != nullptr; next = next->ifa_next) {
-                    inet_ntop(AF_INET, next->ifa_addr, ipStrAddr, INET_ADDRSTRLEN);
-                    cout << next->ifa_name << " " << ipStrAddr << endl;
-                }
-                freeifaddrs(ipAddrs);
-            }
-            */
-
-            if((err = listen(listenSock, 10)) < 0) {
-                throw Exception(__FILE__, __LINE__, err, "Failed to place socket into listening mode");
-            }
-
-            acceptThread = new thread(Server::acceptThreadProc, this);
-        }
-
-        void stop() {
-            if(listenSock) {
-                close(listenSock);
-                listenSock = 0;
-            }
-            if(acceptThread) {
-                acceptThread->join();
-                delete acceptThread;
-                acceptThread = nullptr;
-            }
-        }
-
-        void acceptLoop() {
-            sockaddr_in peersa;
-            auto peersaLen = sizeof(peersa);
-            int newSock;
-            while(!shutdown) {
-                newSock = accept(listenSock, (struct sockaddr *) &peersa, (socklen_t *) &peersaLen);
-                if(newSock < 0) {
-                    if(errno == EWOULDBLOCK) {
-                        sleep(1);
-                    } else {
-                        shutdown = true;
-                    }
-                } else {
-                    Connection *newConnection = new Connection(this);
-                    newConnection->accept(newSock, peersa);
-                    connections.push_back(newConnection);
-                    cout << "  New incoming connection" << endl;
-                }
-            }
-        }
-
-        void sockDidShutdown(Connection *iCnx) {
-            vector<Connection *>::iterator i;
-            for(i = connections.begin(); i != connections.end(); i++) {
-                if(*i == iCnx) {
-                    connections.erase(i);
-                    delete iCnx;
-                    return;
-                }
-            }
-        }
-
-    protected:
-        int listenSock;
-        string ipString;
-        atomic_bool shutdown;
-        thread *acceptThread;
-        vector<Connection *> connections;
-
-        static void acceptThreadProc(Server *iSelf) {
-            iSelf->acceptLoop();
-        }
-};
-
-inline void Connection::shutdownNotification() {
-    if(server) server->sockDidShutdown(this);
-}
-
-#endif
+#endif /* Connection_hpp */
