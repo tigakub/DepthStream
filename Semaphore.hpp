@@ -13,29 +13,31 @@
 
 using namespace std;
 
-class Semaphore {
-    public:
-        Semaphore(int iCount = 0)
-        : count(iCount) { }
-        
-        void signal() {
-            unique_lock<mutex> lock(mtx);
-            count++;
-            cv.notify_one();
-        }
-        
-        void wait() {
-            unique_lock<mutex> lock(mtx);
-            while(!count) {
-                cv.wait(lock);
+namespace ds {
+    class Semaphore {
+        public:
+            Semaphore(int iCount = 0)
+            : count(iCount) { }
+            
+            void signal() {
+                unique_lock<mutex> lock(mtx);
+                count++;
+                cv.notify_one();
             }
-            count--;
-        }
-        
-    protected:
-        mutex mtx;
-        condition_variable cv;
-        int count;
-};
+            
+            void wait() {
+                unique_lock<mutex> lock(mtx);
+                while(!count) {
+                    cv.wait(lock);
+                }
+                count--;
+            }
+            
+        protected:
+            mutex mtx;
+            condition_variable cv;
+            int count;
+    };
+}
 
 #endif /* Semaphore_h */

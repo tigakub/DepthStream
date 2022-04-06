@@ -5,14 +5,16 @@
 
 using namespace std;
 
-typedef struct Exception {
-    Exception(const string &iFile, int iLine, int iError, const string &iMsg)
-    : file(iFile), line(iLine), msg(iMsg), err(iError) { }
-    
-    string file, msg;
-    int line, err;
-} Exception;
+namespace ds {
+    typedef struct Exception {
+        Exception(const string &iFile, int iLine, int iError, const string &iMsg)
+        : file(iFile), line(iLine), msg(iMsg), err(iError) { }
+        
+        string file, msg;
+        int line, err;
+    } Exception;
+}
 
-ostream &operator<<(ostream &os, Exception &e);
+ostream &operator<<(ostream &os, ds::Exception &e);
 
 #endif

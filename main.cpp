@@ -25,6 +25,7 @@ using namespace std;
 using namespace std::chrono;
 using namespace dai;
 using namespace dai::node;
+using namespace ds;
 
 static struct termios stdTerm, rawTerm;
 
@@ -46,16 +47,16 @@ void sigIntHandler(int iSig) {
     quit = true;
 }
 
-class ServerBufferFunctor : public BfrFunctor
+class ServerBufferFunctor : public BufferFunctor
 {
-    virtual void operator()(Connection &cnx, Bfr &buf) {
+    virtual void operator()(Connection &cnx, ds::Buffer &buf) {
         cout << ".";
     }
 };
 
-class ClientBufferFunctor : public BfrFunctor
+class ClientBufferFunctor : public BufferFunctor
 {
-    virtual void operator()(Connection &cnx, Bfr &buf) {
+    virtual void operator()(Connection &cnx, ds::Buffer &buf) {
         cout << ".";
     }
 };
@@ -409,13 +410,13 @@ int main(int argc, const char * argv[]) {
 
         if(startClient) {
             if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.05) {
-                Bfr *buf = client.recoverSendBuffer();
+                ds::Buffer *buf = client.recoverSendBuffer();
                 if(!buf) {
-                    buf = new Bfr();
+                    buf = new ds::Buffer();
                 }
 
                 uint16_t *bufPtr = (uint16_t *) buf->getPayload();
-                Hdr &header = buf->getHeader();
+                Header &header = buf->getHeader();
                 int i = 640*400;
                 while(i--) bufPtr[i] = rawDepth[i];
                 header.payloadSize = 1024000;
