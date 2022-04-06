@@ -8,9 +8,8 @@
 #include "Connection.hpp"
 #include "Server.hpp"
 
-using namespace ds;
-
-void Connection::shutdownNotification() {
-    if(server) server->sockDidShutdown(this);
+namespace ds {
+    void Connection::shutdownNotification() {
+        if(server) server->sockDidShutdown(this);
+    }
 }
-

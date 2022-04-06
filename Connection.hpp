@@ -32,11 +32,14 @@
 
 #include "Semaphore.hpp"
 #include "Exception.hpp"
+#include "Buffer.hpp"
 
 using namespace std;
 
 namespace ds {
     class Server;
+
+    /*
     class Connection;
 
     typedef struct Header {
@@ -127,7 +130,7 @@ namespace ds {
             atomic_bool alive;
             Semaphore sem;
     };
-
+    */
     class Connection {
     protected:
             typedef enum {
@@ -468,7 +471,7 @@ namespace ds {
             Ndx sendIndex, recvIndex;
             BufferHandler bfrHandler;
     };
-
+    /*
     inline void BufferHandler::handlerLoop() {
         alive = true;
         Buffer *aBuf;
@@ -482,6 +485,7 @@ namespace ds {
             }
         }
     }
+    */
 } // ds namespace
 
 #endif /* Connection_hpp */
