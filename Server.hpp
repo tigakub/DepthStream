@@ -43,7 +43,7 @@ class Server {
         static Server shared;
 
     protected:
-        Server(string iInterface, Connection::BfrFunctor &iBfrFunctor)
+        Server(string iInterface, BfrFunctor &iBfrFunctor)
         : interface(iInterface), listenSock(0), shutdown(false), acceptThread(nullptr), bfrFunctor(iBfrFunctor) { }
 
         virtual ~Server() {
@@ -159,7 +159,7 @@ class Server {
         atomic_bool shutdown;
         thread *acceptThread;
         vector<Connection *> connections;
-        Connection::BfrFunctor &bfrFunctor;
+        BfrFunctor &bfrFunctor;
 
         static void acceptThreadProc(Server *iSelf) {
             iSelf->acceptLoop();

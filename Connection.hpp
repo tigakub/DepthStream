@@ -36,111 +36,99 @@
 using namespace std;
 
 class Server;
+class Connection;
 
-class Connection {
+typedef struct Hdr {
+    uint32_t payloadSize;
+
+    void hostToNet() {
+        payloadSize = htonl(payloadSize);
+    }
+
+    void netToHost() {
+        payloadSize = ntohl(payloadSize);
+    }
+} Hdr;
+
+class Bfr {
+    friend class Connection;
+
     public:
-        typedef struct Hdr {
-            uint32_t payloadSize;
+        Bfr(uint32_t iCapacity = 1024000)
+        : payload(new char[iCapacity]), capacity(iCapacity) { }
 
-            void hostToNet() {
-                payloadSize = htonl(payloadSize);
+        virtual ~Bfr() {
+            if(payload) delete [] payload;
+        }
+
+        char *getPayload() { return payload; }
+
+        void growIfNeeded(uint32_t iCapacity) {
+            if(iCapacity > capacity) {
+                delete [] payload;
+                payload = new char[iCapacity];
+                capacity = iCapacity;
             }
+        }
 
-            void netToHost() {
-                payloadSize = ntohl(payloadSize);
-            }
-        } Hdr;
+        uint32_t getCapacity() { return capacity; }
 
-        class Bfr {
-            friend class Connection;
-
-            public:
-                Bfr(uint32_t iCapacity = 1024000)
-                : payload(new char[iCapacity]), capacity(iCapacity) { }
-
-                virtual ~Bfr() {
-                    if(payload) delete [] payload;
-                }
-
-                char *getPayload() { return payload; }
-
-                void growIfNeeded(uint32_t iCapacity) {
-                    if(iCapacity > capacity) {
-                        delete [] payload;
-                        payload = new char[iCapacity];
-                        capacity = iCapacity;
-                    }
-                }
-
-                uint32_t getCapacity() { return capacity; }
-
-                Hdr &getHeader() { return header; }
-
-            protected:
-                Hdr header;
-                char *payload;
-                uint32_t capacity;
-            };
-        
-        class BfrFunctor {
-            public:
-                virtual void operator()(Connection &, Bfr &) = 0;
-        };
-    
-        class BfrHandler {
-            public:
-                BfrHandler(Connection &iCnx, BfrFunctor &iFunctor)
-                : cnx(iCnx), handlerThread(nullptr), functor(iFunctor), alive(false), sem() { }
-                
-                virtual ~BfrHandler() {
-                    stop();
-                }
-                
-                void start() {
-                    if(handlerThread) return;
-                    handlerThread = new thread(BfrHandler::handlerProc, this);
-                }
-                
-                void stop() {
-                    alive = false;
-                    if(handlerThread) {
-                        sem.signal();
-                        handlerThread->join();
-                        delete handlerThread;
-                        handlerThread = nullptr;
-                    }
-                }
-                
-                void handlerLoop() {
-                    alive = true;
-                    Bfr *aBuf;
-                    while(alive) {
-                        sem.wait();
-                        if(!alive) return;
-                        aBuf = cnx.popRecvBuffer();
-                        if(aBuf) {
-                            functor(cnx, *aBuf);
-                            cnx.returnRecvBuffer(aBuf);
-                        }
-                    }
-                }
-                
-                void signal() {
-                    sem.signal();
-                }
-                
-            protected:
-                static void handlerProc(BfrHandler *iSelf) {
-                    iSelf->handlerLoop();
-                }
-                Connection &cnx;
-                thread *handlerThread;
-                BfrFunctor &functor;
-                atomic_bool alive;
-                Semaphore sem;
-        };
+        Hdr &getHeader() { return header; }
 
     protected:
+        Hdr header;
+        char *payload;
+        uint32_t capacity;
+    };
+
+class BfrFunctor {
+    public:
+        virtual void operator()(Connection &, Bfr &) = 0;
+};
+
+class BfrHandler {
+    public:
+        BfrHandler(Connection &iCnx, BfrFunctor &iFunctor)
+        : cnx(iCnx), handlerThread(nullptr), functor(iFunctor), alive(false), sem() { }
+        
+        virtual ~BfrHandler() {
+            stop();
+        }
+        
+        void start() {
+            if(handlerThread) return;
+            handlerThread = new thread(BfrHandler::handlerProc, this);
+        }
+        
+        void stop() {
+            alive = false;
+            if(handlerThread) {
+                sem.signal();
+                handlerThread->join();
+                delete handlerThread;
+                handlerThread = nullptr;
+            }
+        }
+        
+        void handlerLoop();
+        
+        void signal() {
+            sem.signal();
+        }
+        
+    protected:
+        static void handlerProc(BfrHandler *iSelf) {
+            iSelf->handlerLoop();
+        }
+        Connection &cnx;
+        thread *handlerThread;
+        BfrFunctor &functor;
+        atomic_bool alive;
+        Semaphore sem;
+};
+
+class Connection {
+   protected:
         typedef enum {
             HEADER = 1,
             PAYLOAD = 2
@@ -479,5 +467,20 @@ class Connection {
         Ndx sendIndex, recvIndex;
         BfrHandler bfrHandler;
 };
+
+inline void BfrHandler::handlerLoop() {
+    alive = true;
+    Bfr *aBuf;
+    while(alive) {
+        sem.wait();
+        if(!alive) return;
+        aBuf = cnx.popRecvBuffer();
+        if(aBuf) {
+            functor(cnx, *aBuf);
+            cnx.returnRecvBuffer(aBuf);
+        }
+    }
+}
+
 
 #endif /* Connection_hpp */

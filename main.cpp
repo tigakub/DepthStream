@@ -46,16 +46,16 @@ void sigIntHandler(int iSig) {
     quit = true;
 }
 
-class ServerBufferFunctor : public Connection::BfrFunctor
+class ServerBufferFunctor : public BfrFunctor
 {
-    virtual void operator()(Connection &cnx, Connection::Bfr &buf) {
+    virtual void operator()(Connection &cnx, Bfr &buf) {
         cout << ".";
     }
 };
 
-class ClientBufferFunctor : public Connection::BfrFunctor
+class ClientBufferFunctor : public BfrFunctor
 {
-    virtual void operator()(Connection &cnx, Connection::Bfr &buf) {
+    virtual void operator()(Connection &cnx, Bfr &buf) {
         cout << ".";
     }
 };
@@ -409,13 +409,13 @@ int main(int argc, const char * argv[]) {
 
         if(startClient) {
             if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.05) {
-                Connection::Bfr *buf = client.recoverSendBuffer();
+                Bfr *buf = client.recoverSendBuffer();
                 if(!buf) {
-                    buf = new Connection::Bfr();
+                    buf = new Bfr();
                 }
 
                 uint16_t *bufPtr = (uint16_t *) buf->getPayload();
-                Connection::Hdr &header = buf->getHeader();
+                Hdr &header = buf->getHeader();
                 int i = 640*400;
                 while(i--) bufPtr[i] = rawDepth[i];
                 header.payloadSize = 1024000;
