@@ -63,7 +63,7 @@ class ClientBufferFunctor : public BufferFunctor
 
 ServerBufferFunctor serverFunctor;
 
-Server Server::shared("en0", serverFunctor);
+Server Server::shared(serverFunctor);
 
 void printUsage(const string &iAppName) {
     cout
@@ -83,6 +83,7 @@ int main(int argc, const char * argv[]) {
     bool verbose = false;
     bool startServer = false;
     bool startClient = false;
+    string interface("en0");
     string host;
     int port;
 
@@ -103,6 +104,8 @@ int main(int argc, const char * argv[]) {
                 return 0;
             }
             startServer = true;
+            interface = argv[a+1];
+            a += 1;
         } else if((arg == "-c") || (arg == "--connect")) {
             if(startServer) {
                 cerr << "The -s and -c options are mutually exclusive" << endl;
@@ -133,7 +136,7 @@ int main(int argc, const char * argv[]) {
         cout << "  Setting up streaming server" << endl;
         try {
             // Attempt to start listening
-            Server::shared.start();
+            Server::shared.start(interface);
 
             // Attempt to retrieve the local hostname and ip address
             char hostBuffer[256];

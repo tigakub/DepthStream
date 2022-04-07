@@ -44,8 +44,8 @@ namespace ds {
             static Server shared;
 
         protected:
-            Server(string iInterface, BufferFunctor &iBufferFunctor)
-            : interface(iInterface), listenSock(0), shutdown(false), acceptThread(nullptr), bfrFunctor(iBufferFunctor) { }
+            Server(BufferFunctor &iBufferFunctor)
+            : listenSock(0), shutdown(false), acceptThread(nullptr), bfrFunctor(iBufferFunctor) { }
 
             virtual ~Server() {
                 stop();
@@ -61,7 +61,7 @@ namespace ds {
                 return ipString;
             }
 
-            void start() {
+            void start(const string &iInterface) {
                 if(listenSock) return;
 
                 listenSock = socket(AF_INET, SOCK_STREAM, 0);
@@ -85,7 +85,7 @@ namespace ds {
                 
                 struct ifreq ifr;
                 ifr.ifr_addr.sa_family = AF_INET;
-                strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ-1);
+                strncpy(ifr.ifr_name, iInterface.c_str(), IFNAMSIZ-1);
                 ioctl(listenSock, SIOCGIFADDR, &ifr);
                 ipString = string(inet_ntoa(((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr));
 
@@ -154,7 +154,6 @@ namespace ds {
             }
 
         protected:
-            string interface;
             int listenSock;
             string ipString;
             atomic_bool shutdown;
