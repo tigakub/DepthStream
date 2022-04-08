@@ -32,19 +32,35 @@ namespace ds {
             
             virtual void hostToNet() {
                 payloadSize = htonl(payloadSize);
+                *((uint32_t *) &qx) = htonl(*((uint32_t *) &qx));
+                *((uint32_t *) &qy) = htonl(*((uint32_t *) &qy));
+                *((uint32_t *) &qz) = htonl(*((uint32_t *) &qz));
+                *((uint32_t *) &qw) = htonl(*((uint32_t *) &qw));
             }
 
             virtual void netToHost() {
                 payloadSize = ntohl(payloadSize);
+                *((uint32_t *) &qx) = ntohl(*((uint32_t *) &qx));
+                *((uint32_t *) &qy) = ntohl(*((uint32_t *) &qy));
+                *((uint32_t *) &qz) = ntohl(*((uint32_t *) &qz));
+                *((uint32_t *) &qw) = ntohl(*((uint32_t *) &qw));
             }
             
             virtual uint32_t size() { return sizeof(Header); }
             
             void setPayloadSize(uint32_t iSize) { payloadSize = iSize; }
             uint32_t getPayloadSize() { return payloadSize; }
+
+            void setRotation(float iqx, float iqy, float iqz, float iqw) {
+                qx = iqx; qy = iqy; qz = iqz; qw = iqw;
+            }
+            void getRotation(float &oqx, float &oqy, float &oqz, float &oqw) {
+                oqx = qz; oqy = qy; oqz = qz; oqw = qw;
+            }
             
         protected:
             uint32_t payloadSize;
+            float qx, qy, qz, qw;
     };
 
     class Buffer {
