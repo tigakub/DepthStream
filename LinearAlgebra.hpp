@@ -25,7 +25,7 @@ namespace ds {
     
     typedef struct vertex4 {
         vertex4(float ix = 0.0, float iy = 0.0, float iz = 0.0, float iw = 1.0)
-        : x(ix), y(iy), z(iz), w(iz)
+        : x(ix), y(iy), z(iz), w(iw)
         { }
         float x, y, z, w;
     } vertex4;
@@ -37,7 +37,7 @@ namespace ds {
     } matrix44;
     
     typedef struct quaternion {
-        quaternion(float qi, float qj, float qk, float qr): i(qi), j(qj), k(qj), r(qr) { }
+        quaternion(float qi, float qj, float qk, float qr): i(qi), j(qj), k(qk), r(qr) { }
         float i, j, k, r;
         
         quaternion &operator *= (const quaternion &q) {
@@ -55,13 +55,13 @@ namespace ds {
             return quaternion(i2, j2, k2, r2);
         }
         
-        vertex4 operator * (const vertex4 &v) const {
+        vertex3 operator * (const vertex3 &v) const {
             quaternion
                 qv(v.x, v.y, v.z, 0.0),
                 qr(-i, -j, -k, r),
                 q((*this * qv) * qr);
             
-            return vertex4(q.i, q.j, q.k, 1.0);
+            return vertex3(q.i, q.j, q.k);
         }
             
     } quaternion;
