@@ -32,18 +32,18 @@ namespace ds {
             
             virtual void hostToNet() {
                 payloadSize = htonl(payloadSize);
-                *((uint32_t *) &qx) = htonl(*((uint32_t *) &qx));
-                *((uint32_t *) &qy) = htonl(*((uint32_t *) &qy));
-                *((uint32_t *) &qz) = htonl(*((uint32_t *) &qz));
-                *((uint32_t *) &qw) = htonl(*((uint32_t *) &qw));
+                *((uint32_t *) &qi) = htonl(*((uint32_t *) &qi));
+                *((uint32_t *) &qj) = htonl(*((uint32_t *) &qj));
+                *((uint32_t *) &qk) = htonl(*((uint32_t *) &qk));
+                *((uint32_t *) &qr) = htonl(*((uint32_t *) &qr));
             }
 
             virtual void netToHost() {
                 payloadSize = ntohl(payloadSize);
-                *((uint32_t *) &qx) = ntohl(*((uint32_t *) &qx));
-                *((uint32_t *) &qy) = ntohl(*((uint32_t *) &qy));
-                *((uint32_t *) &qz) = ntohl(*((uint32_t *) &qz));
-                *((uint32_t *) &qw) = ntohl(*((uint32_t *) &qw));
+                *((uint32_t *) &qi) = ntohl(*((uint32_t *) &qi));
+                *((uint32_t *) &qj) = ntohl(*((uint32_t *) &qj));
+                *((uint32_t *) &qk) = ntohl(*((uint32_t *) &qk));
+                *((uint32_t *) &qr) = ntohl(*((uint32_t *) &qr));
             }
             
             virtual uint32_t size() { return sizeof(Header); }
@@ -51,16 +51,16 @@ namespace ds {
             void setPayloadSize(uint32_t iSize) { payloadSize = iSize; }
             uint32_t getPayloadSize() { return payloadSize; }
 
-            void setRotation(float iqx, float iqy, float iqz, float iqw) {
-                qx = iqx; qy = iqy; qz = iqz; qw = iqw;
+            void setRotation(float iqi, float iqj, float iqk, float iqr) {
+                qi = iqi; qj = iqj; qk = iqk; qr = iqr;
             }
-            void getRotation(float &oqx, float &oqy, float &oqz, float &oqw) {
-                oqx = qz; oqy = qy; oqz = qz; oqw = qw;
+            void getRotation(float &oqi, float &oqj, float &oqk, float &oqr) {
+                oqi = qi; oqj = qj; oqk = qk; oqr = qr;
             }
             
         protected:
             uint32_t payloadSize;
-            float qx, qy, qz, qw;
+            float qi, qj, qk, qr;
     };
 
     class Buffer {

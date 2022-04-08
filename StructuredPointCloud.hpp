@@ -2,15 +2,9 @@
 #define __STRUCTUREDPOINTCLOUD_HPP__
 
 #include <depthai/depthai.hpp>
+#include "LinearAlgebra.hpp"
 
 namespace ds {
-    // Structure to encapsulate a 3D vertex
-    typedef struct vertex
-    {
-        vertex(float ix = 0.0, float iy = 0.0, float iz = 0.0): x(ix), y(ix), z(iz) { }
-        float x, y, z;
-    } vertex;
-
     // Template class to encapsulate a point cloud that knows how to map raw depth data
     // into cartesian 3-space
     template <int WIDTH = 640, int HEIGHT = 400>
@@ -32,7 +26,7 @@ namespace ds {
                         int i = y * WIDTH + x;
                         float u = float(x), v = float(y);
                         float z = float(*iRawDepth.ptr<uint16_t>(y, x));
-                        data[i] = vertex(
+                        data[i] = vertex3(
                             z * (u * rfx - cx_over_fx),
                             z * (v * rfy - cy_over_fy),
                             z);
@@ -47,7 +41,7 @@ namespace ds {
                         int i = y * WIDTH + x;
                         float u = float(x), v = float(y);
                         float z = float(iRawDepth[i]);
-                        data[i] = vertex(
+                        data[i] = vertex3(
                             z * (u * rfx - cx_over_fx),
                             z * (v * rfy - cy_over_fy),
                             z);
@@ -56,15 +50,15 @@ namespace ds {
             }
 
             // Return a const pointer to the point cloud vertices
-            const vertex *cartesianMap() const { return data; }
+            const vertex3 *cartesianMap() const { return data; }
 
-            const vertex &operator()(int x, int y) const {
+            const vertex3 &operator()(int x, int y) const {
                 return data[y * WIDTH + x];
             }
 
         protected:
             float rfx, rfy, cx_over_fx, cy_over_fy;
-            vertex data[WIDTH * HEIGHT];
+            vertex3 data[WIDTH * HEIGHT];
     };
 }
 
