@@ -415,14 +415,14 @@ int main(int argc, const char * argv[]) {
             if((float(duration_cast<microseconds>(currentTime - frameTimeStamp).count()) * 0.000001) > 0.05) {
                 ds::Buffer *buf = client.recoverSendBuffer();
                 if(!buf) {
-                    buf = new ds::Buffer();
+                    buf = new ds::Buffer(new Header());
                 }
 
                 uint16_t *bufPtr = (uint16_t *) buf->getPayload();
                 Header &header = buf->getHeader();
                 int i = 640*400;
                 while(i--) bufPtr[i] = rawDepth[i];
-                header.payloadSize = 1024000;
+                header.setPayloadSize(1024000);
                 client.submitSendBuffer(buf);
 
                 frameTimeStamp = currentTime;
