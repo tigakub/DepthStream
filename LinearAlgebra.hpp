@@ -13,7 +13,7 @@
 namespace ds {
     // Structure to encapsulate a 3D vertex
     typedef struct vertex3 {
-        vertex3(float ix = 0.0, float iy = 0.0, float iz = 0.0): x(ix), y(ix), z(iz) { }
+        vertex3(float ix = 0.0, float iy = 0.0, float iz = 0.0): x(ix), y(iy), z(iz) { }
         float x, y, z;
     } vertex3;
     
