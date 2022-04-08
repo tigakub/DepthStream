@@ -24,26 +24,38 @@ namespace ds {
     class Server;
     class Connection;
 
-    typedef struct Header {
-        uint32_t payloadSize;
+    class Header {
+        public:
+            Header()
+            : payloadSize(0) { }
+            virtual ~Header() { }
+            
+            virtual void hostToNet() {
+                payloadSize = htonl(payloadSize);
+            }
 
-        void hostToNet() {
-            payloadSize = htonl(payloadSize);
-        }
-
-        void netToHost() {
-            payloadSize = ntohl(payloadSize);
-        }
-    } Header;
+            virtual void netToHost() {
+                payloadSize = ntohl(payloadSize);
+            }
+            
+            virtual uint32_t size() { return sizeof(Header); }
+            
+            void setPayloadSize(uint32_t iSize) { payloadSize = iSize; }
+            uint32_t getPayloadSize() { return payloadSize; }
+            
+        protected:
+            uint32_t payloadSize;
+    };
 
     class Buffer {
         friend class Connection;
 
         public:
-            Buffer(uint32_t iCapacity = 1024000)
-            : payload(new char[iCapacity]), capacity(iCapacity) { }
+            Buffer(Header *iHeader, uint32_t iCapacity = 1024000)
+            : header(iHeader), payload(new char[iCapacity]), capacity(iCapacity) { }
 
             virtual ~Buffer() {
+                if(header) delete header;
                 if(payload) delete [] payload;
             }
 
@@ -59,10 +71,10 @@ namespace ds {
 
             uint32_t getCapacity() { return capacity; }
 
-            Header &getHeader() { return header; }
+            Header &getHeader() { return *header; }
 
         protected:
-            Header header;
+            Header *header;
             char *payload;
             uint32_t capacity;
         };

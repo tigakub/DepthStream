@@ -39,100 +39,8 @@ using namespace std;
 namespace ds {
     class Server;
 
-    /*
-    class Connection;
-
-    typedef struct Header {
-        uint32_t payloadSize;
-
-        void hostToNet() {
-            payloadSize = htonl(payloadSize);
-        }
-
-        void netToHost() {
-            payloadSize = ntohl(payloadSize);
-        }
-    } Header;
-
-    class Buffer {
-        friend class Connection;
-
-        public:
-            Buffer(uint32_t iCapacity = 1024000)
-            : payload(new char[iCapacity]), capacity(iCapacity) { }
-
-            virtual ~Buffer() {
-                if(payload) delete [] payload;
-            }
-
-            char *getPayload() { return payload; }
-
-            void growIfNeeded(uint32_t iCapacity) {
-                if(iCapacity > capacity) {
-                    delete [] payload;
-                    payload = new char[iCapacity];
-                    capacity = iCapacity;
-                }
-            }
-
-            uint32_t getCapacity() { return capacity; }
-
-            Header &getHeader() { return header; }
-
-        protected:
-            Header header;
-            char *payload;
-            uint32_t capacity;
-        };
-
-    class BufferFunctor {
-        public:
-            virtual void operator()(Connection &, Buffer &) = 0;
-    };
-
-    class BufferHandler {
-        public:
-            BufferHandler(Connection &iCnx, BufferFunctor &iFunctor)
-            : cnx(iCnx), handlerThread(nullptr), functor(iFunctor), alive(false), sem() { }
-            
-            virtual ~BufferHandler() {
-                stop();
-            }
-            
-            void start() {
-                if(handlerThread) return;
-                handlerThread = new thread(BufferHandler::handlerProc, this);
-            }
-            
-            void stop() {
-                alive = false;
-                if(handlerThread) {
-                    sem.signal();
-                    handlerThread->join();
-                    delete handlerThread;
-                    handlerThread = nullptr;
-                }
-            }
-            
-            void handlerLoop();
-            
-            void signal() {
-                sem.signal();
-            }
-            
-        protected:
-            static void handlerProc(BufferHandler *iSelf) {
-                iSelf->handlerLoop();
-            }
-            Connection &cnx;
-            thread *handlerThread;
-            BufferFunctor &functor;
-            atomic_bool alive;
-            Semaphore sem;
-    };
-    */
     class Connection {
-    protected:
+        protected:
             typedef enum {
                 HEADER = 1,
                 PAYLOAD = 2
@@ -302,10 +210,10 @@ namespace ds {
                             currentBuf = poolQueue.front();
                             poolQueue.pop_front();
                         } else {
-                            currentBuf = new Buffer();
+                            currentBuf = new Buffer(new Header());
                         }
                         poolLock.unlock();
-                        recvIndex.set((char *) &swappedHeader, sizeof(swappedHeader));
+                        recvIndex.set((char *) &swappedHeader, swappedHeader.size());
                         mode = HEADER;
                     }
                     if(currentBuf) {
@@ -323,9 +231,9 @@ namespace ds {
                                     switch(mode) {
                                         case HEADER:
                                             swappedHeader.netToHost();
-                                            currentBuf->header = swappedHeader;
-                                            recvIndex.set(currentBuf->getPayload(), currentBuf->header.payloadSize);
-                                            currentBuf->growIfNeeded(currentBuf->header.payloadSize);
+                                            currentBuf->getHeader() = swappedHeader;
+                                            recvIndex.set(currentBuf->getPayload(), currentBuf->getHeader().getPayloadSize());
+                                            currentBuf->growIfNeeded(currentBuf->getHeader().getPayloadSize());
                                             mode = PAYLOAD;
                                             break;
                                         case PAYLOAD:
@@ -385,9 +293,9 @@ namespace ds {
                         }
                         sendLock.unlock();
                         if(currentBuf) {
-                            swappedHeader = currentBuf->header;
+                            swappedHeader = currentBuf->getHeader();
                             swappedHeader.hostToNet();
-                            sendIndex.set((char *) &swappedHeader, sizeof(swappedHeader));
+                            sendIndex.set((char *) &swappedHeader, swappedHeader.size());
                             mode = HEADER;
                         }
                     }
@@ -400,7 +308,7 @@ namespace ds {
                             if(!sendIndex.remaining()) {
                                 switch(mode) {
                                     case HEADER:
-                                        sendIndex.set(currentBuf->getPayload(), currentBuf->header.payloadSize);
+                                        sendIndex.set(currentBuf->getPayload(), currentBuf->getHeader().getPayloadSize());
                                         mode = PAYLOAD;
                                         break;
                                     case PAYLOAD:
@@ -471,21 +379,7 @@ namespace ds {
             Ndx sendIndex, recvIndex;
             BufferHandler bfrHandler;
     };
-    /*
-    inline void BufferHandler::handlerLoop() {
-        alive = true;
-        Buffer *aBuf;
-        while(alive) {
-            sem.wait();
-            if(!alive) return;
-            aBuf = cnx.popRecvBuffer();
-            if(aBuf) {
-                functor(cnx, *aBuf);
-                cnx.returnRecvBuffer(aBuf);
-            }
-        }
-    }
-    */
+
 } // ds namespace
 
 #endif /* Connection_hpp */
