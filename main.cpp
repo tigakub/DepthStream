@@ -382,14 +382,14 @@ int main(int argc, const char * argv[]) {
         auto rotationFrame = rotationFrameQueue->get<IMUData>();
         auto rotationPackets = rotationFrame->packets;
 
-        float qi, qj, qk, qw, qaccuracy;
+        float qi, qj, qk, qr, qaccuracy;
         if(rotationPackets.size()) {
             auto &packet = rotationPackets.back();
             auto rotation = packet.rotationVector;
             qi = rotation.i;
             qj = rotation.j;
             qk = rotation.k;
-            qw = rotation.real;
+            qr = rotation.real;
             qaccuracy = rotation.rotationVectorAccuracy;
         }
 
@@ -423,6 +423,7 @@ int main(int argc, const char * argv[]) {
                 int i = 640*400;
                 while(i--) bufPtr[i] = rawDepth[i];
                 header.setPayloadSize(1024000);
+                header.setRotation(qi, qj, qk, qr);
                 client.submitSendBuffer(buf);
 
                 frameTimeStamp = currentTime;
@@ -470,7 +471,7 @@ int main(int argc, const char * argv[]) {
                     << ", "
                         << setw(8) << setprecision(2) << qk
                     << ", "
-                        << setw(8) << setprecision(2) << qw
+                        << setw(8) << setprecision(2) << qr
                     << ") accuracy: "
                         << setw(8) << setprecision(2) << qaccuracy
                         << "\r" << flush;
