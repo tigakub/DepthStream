@@ -89,6 +89,7 @@ namespace ds {
             recvLock(), recvQueue(),
             poolLock(), poolQueue(),
             sendIndex(), recvIndex(),
+            sequenceCount(0),
             bfrHandler(*this, iFunctor) {
             }
 
@@ -213,7 +214,7 @@ namespace ds {
                             currentBuf = new Buffer(new Header());
                         }
                         poolLock.unlock();
-                        recvIndex.set((char *) &swappedHeader, swappedHeader.size());
+                        recvIndex.set((char *) swappedHeader.startPtr(), swappedHeader.size());
                         mode = HEADER;
                     }
                     if(currentBuf) {
@@ -280,6 +281,8 @@ namespace ds {
             }
 
             void sendLoop() {
+                fd_set sockSet;
+                struct timeval timeout;
                 Buffer *currentBuf = nullptr;
                 Mode mode = HEADER;
                 Header swappedHeader;
@@ -293,29 +296,72 @@ namespace ds {
                         }
                         sendLock.unlock();
                         if(currentBuf) {
+                            /*
                             swappedHeader = currentBuf->getHeader();
                             swappedHeader.hostToNet();
                             sendIndex.set((char *) &swappedHeader, swappedHeader.size());
-                            mode = HEADER;
+                            */
+                            Header &header = currentBuf->getHeader();
+                            header.signature = 0x626c616d;
+                            header.sequenceCount = sequenceCount;
+                            if(header.payloadSize == 0) {
+                                cout << "Zero payload message ignored" << endl;
+                                returnLock.lock();
+                                returnQueue.push_back(currentBuf);
+                                returnLock.unlock();
+                                currentBuf = nullptr;
+                            } else {
+                                /*
+                                uint8_t *hdrPtr = ((uint8_t*) header.startPtr());
+                                cout << "Actual header bytes:              ";
+                                for(int i = 0; i < sizeof(Header); i++) {
+                                    cout << hex << int(hdrPtr[i]) << " ";
+                                }
+                                cout << endl << endl;
+                                */
+                                header.hostToNet();
+                                sendIndex.set((char *) header.startPtr(), header.size());
+                                mode = HEADER;
+                            }
                         }
                     }
                     if(currentBuf) {
                         uint32_t bytesToSend = sendIndex.remaining();
                         if(bytesToSend > 1024) bytesToSend = 1024;
+                        /*
+                        FD_ZERO(&sockSet);
+                        FD_SET(sock, &sockSet);
+                        timeout.tv_sec = 1;
+                        timeout.tv_usec = 0;
+                        int n = select(sock+1, &sockSet, NULL, NULL, &timeout);
+                        if(n < 0) performShutdown = true;
+                        */
+                        if(mode == HEADER) {
+                            uint8_t *hdrPtr = ((uint8_t*) currentBuf->getHeader().startPtr());
+                            cout << "Bytes sent: ";
+                            for(int i = 0; i < sizeof(Header); i++) {
+                                cout << hex << int(hdrPtr[i]) << " ";
+                            }
+                            cout << endl;
+                        }
                         ssize_t sentBytes = send(sock, sendIndex.next(), bytesToSend, 0);
                         if(sentBytes > 0) {
                             sendIndex.advance(uint32_t(sentBytes));
                             if(!sendIndex.remaining()) {
                                 switch(mode) {
-                                    case HEADER:
+                                    case HEADER: {
+                                        Header &header = currentBuf->getHeader();
+                                        header.netToHost();
                                         sendIndex.set(currentBuf->getPayload(), currentBuf->getHeader().getPayloadSize());
                                         mode = PAYLOAD;
+                                        }
                                         break;
                                     case PAYLOAD:
                                         returnLock.lock();
                                         returnQueue.push_back(currentBuf);
                                         returnLock.unlock();
                                         currentBuf = nullptr;
+                                        sequenceCount++;
                                         mode = HEADER;
                                         break;
                                 }
@@ -323,7 +369,7 @@ namespace ds {
                         } else if(sentBytes < 0) {
                             // Error, what to do?
                         } else {
-                            // cout << "No bytes sent" << endl;
+                            cout << "No bytes sent" << endl;
                         }
                     }
                 }
@@ -377,6 +423,7 @@ namespace ds {
             mutex poolLock;
             deque<Buffer *> poolQueue;
             Ndx sendIndex, recvIndex;
+            uint32_t sequenceCount;
             BufferHandler bfrHandler;
     };
 

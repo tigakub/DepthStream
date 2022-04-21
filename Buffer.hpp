@@ -24,13 +24,16 @@ namespace ds {
     class Server;
     class Connection;
 
+    #pragma pack(push, 4)
     class Header {
         public:
             Header()
-            : payloadSize(0) { }
+            : signature(0x626c616d), sequenceCount(0), payloadSize(0) { }
             virtual ~Header() { }
             
             virtual void hostToNet() {
+                signature = htonl(signature);
+                sequenceCount = htonl(sequenceCount);
                 payloadSize = htonl(payloadSize);
                 *((uint32_t *) &qi) = htonl(*((uint32_t *) &qi));
                 *((uint32_t *) &qj) = htonl(*((uint32_t *) &qj));
@@ -39,6 +42,8 @@ namespace ds {
             }
 
             virtual void netToHost() {
+                signature = ntohl(signature);
+                sequenceCount = ntohl(sequenceCount);
                 payloadSize = ntohl(payloadSize);
                 *((uint32_t *) &qi) = ntohl(*((uint32_t *) &qi));
                 *((uint32_t *) &qj) = ntohl(*((uint32_t *) &qj));
@@ -46,6 +51,7 @@ namespace ds {
                 *((uint32_t *) &qr) = ntohl(*((uint32_t *) &qr));
             }
             
+            virtual void *startPtr() { return (void *) &signature; }
             virtual uint32_t size() { return sizeof(Header); }
             
             void setPayloadSize(uint32_t iSize) { payloadSize = iSize; }
@@ -57,11 +63,13 @@ namespace ds {
             void getRotation(float &oqi, float &oqj, float &oqk, float &oqr) {
                 oqi = qi; oqj = qj; oqk = qk; oqr = qr;
             }
-            
-        protected:
+
+            uint32_t signature;
+            uint32_t sequenceCount;
             uint32_t payloadSize;
             float qi, qj, qk, qr;
     };
+    #pragma pack(pop)
 
     class Buffer {
         friend class Connection;
